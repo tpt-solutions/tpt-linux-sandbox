@@ -1,0 +1,47 @@
+Design Document 3: tpt-linux-sandbox
+
+Status: Draft (Rev 2) | Target: Composable Linux Sandboxing (Landlock/seccomp/namespaces/cgroups)
+
+1. Overview & Motivation
+
+Canonical is heavily invested in security (AppArmor, snap-confine), and Landlock is the direction of travel for kernel-native, unprivileged sandboxing on Linux.
+
+Prior art check — correction from v1: the official landlock crate (maintained by the Landlock kernel authors) is already a safe, high-level, builder-style Rust API, not raw unsafe FFI. Likewise caps (capabilities) and seccompiler (BPF filter generation) already provide safe wrappers for their respective layers. The actual gap is composition, not safety — there's no single crate that layers Landlock + seccomp + namespaces + cgroups behind one declarative API with a correct, enforced ordering between them. That composition, plus the declarative "state what's allowed" ergonomics, is the real value proposition, and the pitch to Canonical/community should lead with that rather than implying the underlying primitives are unsafe today.
+
+2. Design Principles
+Declarative API: Sandbox::new().allow_read("/etc").apply() — describe the desired policy, not the syscalls to get there.
+Composable Layers: Landlock (filesystem) + seccomp (syscalls) + namespaces (isolation) + cgroups (resources), applied in a strict, irreversibility-aware order (§4).
+Fail-Safe by Default: an invalid or inapplicable sandbox configuration aborts the process rather than degrading to an insecure fallback.
+Explicit Rollback Semantics (new in Rev 2): because several stages in the state machine are irreversible (seccomp and Landlock cannot be undone once applied), the builder must validate the entire requested configuration before applying any irreversible stage, not partway through. A partially-applied, unrecoverable sandbox is worse than a clean abort before anything irreversible happens.
+3. Workspace Architecture & Crates
+Core Sandboxing Primitives
+tpt-landlock-highlevel: Declarative builder over the landlock crate's safe API — the value-add here is ergonomics and composition with the other layers, not re-solving memory safety that's already solved.
+tpt-seccomp-builder: High-level DSL over seccompiler/BPF filter generation for allow/deny syscall policies.
+tpt-namespaces-rs: Safe wrappers around clone3/unshare for user, mount, PID, and network namespaces, including UID/GID mapping for user namespaces.
+Resource & Access Control
+tpt-cgroup-v2: Manages cgroup v2 hierarchies for CPU/memory/I/O limits.
+tpt-caps-drop: Ergonomic layer over the caps crate for capability dropping (CAP_DROP) and minimal retention (CAP_KEEP).
+tpt-chroot-jail: Minimal chroot setup — pivot_root, safe mounting of /proc, /dev, /sys inside the jail.
+Policy Analysis & Auditing
+tpt-apparmor-parser: Parses/validates AppArmor profiles; can assist converting them to Landlock rules on older kernels.
+tpt-selinux-context: Parses/manipulates SELinux security contexts.
+tpt-audit-logger: Async reader/parser for the kernel audit subsystem (netlink or /var/log/audit), used by sandboxed apps to log blocked access safely.
+CLI / Integration Layer
+tpt-sandbox-cli: Runs an arbitrary command in a fully locked-down Landlock/seccomp/cgroup sandbox — a pure-Rust alternative to bwrap (Bubblewrap) or firejail.
+4. Execution Order & State Machine
+
+Strict ordering avoids race conditions, and two stages (seccomp, Landlock) are irreversible once applied. The builder validates the full requested policy before Stage 5 begins — no irreversible stage starts until every later stage's config has already been checked for validity.
+
+Validation: parse and validate the complete requested policy (namespaces, caps, seccomp rules, Landlock rules) before touching the kernel. Abort here on any invalid combination.
+Unprivileged Setup: configure cgroups and audit logging.
+Namespace Creation: unshare namespaces (User, Mount, PID).
+Filesystem Setup: pivot_root or chroot, mount pseudo-filesystems.
+Capability Dropping: drop root capabilities.
+Seccomp Enforcement (irreversible): apply BPF filters — must happen after capability drop, since seccomp cannot be undone.
+Landlock Enforcement (irreversible, last): apply filesystem restrictions.
+
+Cross-link: this is the natural execution environment for tpt-deb-toolkit's tpt-maintainer-scripts and tpt-linux-hw-rs's tpt-udev-rules RUN{} execution — both need exactly this kind of scoped, declarative sandbox rather than running with full daemon/root privileges.
+
+5. Open Questions / Validation Needed
+Default policy profile for maintainer-script execution (referenced from tpt-deb-toolkit §3) — needs its own syscall/filesystem allowlist audit against a representative sample of real postinst scripts.
+Minimum kernel version matrix for Landlock features actually needed (5.13 baseline vs. later ruleset extensions).
