@@ -20,13 +20,16 @@ compile_error!("tpt-l-caps-drop only supports Linux");
 
 use thiserror::Error;
 
-/// A Linux capability name (e.g. `"CAP_NET_ADMIN"`).
+/// A Linux capability name (e.g. `"CAP_NET_ADMIN"` or `"net_admin"`).
 pub type CapName = String;
 
 /// Errors produced by this crate.
 #[derive(Debug, Error)]
 pub enum CapsError {
-    /// A capability could not be parsed or applied.
+    /// A capability name is not recognised.
+    #[error("unknown capability: {0}")]
+    UnknownCap(String),
+    /// A capability set read/write operation failed.
     #[error("capability operation failed: {0}")]
     Operation(String),
 }
@@ -56,8 +59,8 @@ impl CapsPolicy {
 
     /// Retain capability `cap` even when `drop_all` is set.
     ///
-    /// `cap` may be the full name (`"CAP_NET_ADMIN"`) or the short name
-    /// (`"net_admin"`); case-insensitive.
+    /// Accepts the full name (`"CAP_NET_ADMIN"`) or short name (`"net_admin"`);
+    /// case-insensitive.
     pub fn keep(mut self, cap: impl Into<CapName>) -> Self {
         self.keep.push(cap.into());
         self
@@ -65,12 +68,42 @@ impl CapsPolicy {
 
     /// Apply the capability policy to the calling process.
     pub fn apply(self) -> Result<(), CapsError> {
-        // TODO: use the `caps` crate to:
-        //   1. Read the current sets.
-        //   2. If drop_all_flag, build the new set containing only self.keep.
-        //   3. Verify each kept cap is present in the bounding set.
-        //   4. Write back via caps::set().
-        drop(self);
+        use caps::{CapSet, CapsHashSet};
+
+        if !self.drop_all_flag {
+            return Ok(());
+        }
+
+        // Parse the keep list.
+        let mut keep_set = CapsHashSet::new();
+        for name in &self.keep {
+            let cap = name
+                .to_lowercase()
+                .trim_start_matches("cap_")
+                .to_uppercase();
+            let cap = format!("CAP_{cap}");
+            let parsed = cap
+                .parse::<caps::Capability>()
+                .map_err(|_| CapsError::UnknownCap(name.clone()))?;
+            keep_set.insert(parsed);
+        }
+
+        // Read the current permitted set and drop everything not in keep_set.
+        let permitted = caps::read(None, CapSet::Permitted)
+            .map_err(|e| CapsError::Operation(e.to_string()))?;
+
+        let new_set: CapsHashSet = permitted
+            .intersection(&keep_set)
+            .copied()
+            .collect();
+
+        caps::set(None, CapSet::Effective, &new_set)
+            .map_err(|e| CapsError::Operation(e.to_string()))?;
+        caps::set(None, CapSet::Permitted, &new_set)
+            .map_err(|e| CapsError::Operation(e.to_string()))?;
+        caps::set(None, CapSet::Inheritable, &CapsHashSet::new())
+            .map_err(|e| CapsError::Operation(e.to_string()))?;
+
         Ok(())
     }
 }

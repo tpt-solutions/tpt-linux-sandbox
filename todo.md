@@ -25,19 +25,19 @@
 ### `tpt-l-landlock-highlevel`
 - [x] `RulesetBuilder` with `.allow_read()`, `.allow_write()`, `.allow_exec()`
 - [x] `.build()` — full validation, no kernel calls
-- [ ] Runtime Landlock ABI version detection (≥ v1 / Linux 5.13) — stub present, needs `landlock` crate wiring
-- [ ] `.apply()` — irreversible enforcement via `landlock` crate — stub present, needs implementation
+- [x] Runtime Landlock ABI version detection (≥ v1 / Linux 5.13) — handled by `landlock` crate ABI negotiation
+- [x] `.apply()` — irreversible enforcement via `landlock` crate — implemented
 
 ### `tpt-l-seccomp-builder`
 - [x] `SeccompPolicy` with `.allow_syscall()`, `.deny_syscall()`, `.default_action()`
 - [x] Default-deny policy; explicit allowlist approach
-- [ ] BPF compilation via `seccompiler` — stub present, needs implementation
-- [ ] `.apply()` — irreversible `seccomp_load` — stub present, needs implementation
+- [x] BPF compilation via `seccompiler` — implemented
+- [x] `.apply()` — irreversible `seccomp_load` — implemented
 
 ### `tpt-l-namespaces-rs`
 - [x] `NamespaceSet` builder: `.user()`, `.mount()`, `.pid()`, `.network()`
-- [ ] `unshare(2)` call with correct `CLONE_NEW*` flags — stub present, needs `nix` wiring
-- [ ] UID/GID mapping for user namespaces (`/proc/self/uid_map`, `gid_map`) — stub present
+- [x] `unshare(2)` call with correct `CLONE_NEW*` flags — implemented via `nix::sched::unshare`
+- [x] UID/GID mapping for user namespaces (`/proc/self/uid_map`, `gid_map`) — implemented
 
 ---
 
@@ -45,28 +45,28 @@
 
 ### `tpt-l-cgroup-v2`
 - [x] `CgroupConfig` builder: `.cpu_quota()`, `.memory_limit()`, `.io_weight()`
-- [ ] Create `/sys/fs/cgroup/<name>/` hierarchy — stub present, needs `fs::create_dir_all`
-- [ ] Write `cpu.max`, `memory.max`, `io.weight` control files — stub present
-- [ ] `.enter()` — write PID to `cgroup.procs` — stub present
-- [ ] `.destroy()` — rmdir cleanup — stub present
+- [x] Create `/sys/fs/cgroup/<name>/` hierarchy — implemented
+- [x] Write `cpu.max`, `memory.max`, `io.weight` control files — implemented
+- [x] `.enter()` — write PID to `cgroup.procs` — implemented
+- [x] `.destroy()` — rmdir cleanup — implemented
 
 ### `tpt-l-caps-drop`
 - [x] `CapsPolicy` builder: `.drop_all()`, `.keep(cap)`
-- [ ] Bounding set validation before dropping — stub present, needs `caps` crate wiring
-- [ ] `.apply()` via `caps` crate (permitted, effective, inheritable sets) — stub present
+- [x] Bounding set validation before dropping — implemented
+- [x] `.apply()` via `caps` crate (permitted, effective, inheritable sets) — implemented
 
 ### `tpt-l-chroot-jail`
 - [x] `JailConfig` builder: `.new_root()`, `.mount_proc()`, `.mount_dev_minimal()`, `.mount_sys_ro()`
-- [ ] `pivot_root(2)` implementation — stub present, needs `nix` wiring
-- [ ] `chroot(2)` fallback with logged warning — stub present
-- [ ] Pseudo-filesystem mounting (`/proc`, minimal `/dev`, `/sys` read-only) — stub present
+- [x] `pivot_root(2)` implementation — implemented via `nix::unistd::pivot_root`
+- [x] `chroot(2)` fallback with logged warning — implemented
+- [x] Pseudo-filesystem mounting (`/proc`, minimal `/dev`, `/sys` read-only) — implemented
 
 ---
 
 ## Phase 4: Policy Analysis & Auditing
 
 ### `tpt-l-apparmor-parser`
-- [ ] AppArmor profile textual format parser → typed AST (pure Rust, `nom` or hand-rolled) — stub present
+- [x] AppArmor profile textual format parser → typed AST (hand-rolled, no `nom` dep)
 - [x] Landlock rule emitter for filesystem rules with a direct mapping (`landlock_rules()`)
 - [x] Warning for rules with no Landlock equivalent
 
@@ -77,8 +77,8 @@
 - [x] No `libselinux` dependency
 
 ### `tpt-l-audit-logger`
-- [ ] Open `NETLINK_AUDIT` raw socket — stub present, needs `libc::socket` wiring
-- [ ] Bind and receive kernel audit netlink messages — stub present
+- [x] Open `NETLINK_AUDIT` raw socket — implemented via `libc::socket`
+- [x] Bind and receive kernel audit netlink messages — implemented
 - [x] Parse records into typed `AuditEvent { record_type, fields }` (`AuditEvent::parse`)
 - [x] `subscribe(buffer)` async fn returning `mpsc::Receiver<AuditEvent>` (Tokio)
 
@@ -95,7 +95,7 @@
   5. Capability dropping
   6. Seccomp enforcement *(irreversible)*
   7. Landlock enforcement *(irreversible, last)*
-- [ ] Full policy validation — `validate()` stub present, invalid-combination logic needed
+- [x] Full policy validation — jail-without-mount-namespace guard implemented
 - [x] Clear, descriptive error messages on invalid combinations (`SandboxError` variants)
 
 ---

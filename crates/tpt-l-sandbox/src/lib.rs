@@ -169,9 +169,27 @@ impl Sandbox {
     }
 
     fn validate(&self) -> Result<(), SandboxError> {
-        // TODO: check for invalid combinations, e.g.:
-        //   - Landlock + jail requires a mount namespace
-        //   - seccomp rules that would block syscalls needed by later stages
+        // A filesystem jail without a mount namespace is dangerous — pivot_root
+        // would affect the system-wide mount table rather than an isolated copy.
+        if self.jail.is_some() {
+            let has_mount_ns = self
+                .namespaces
+                .as_ref()
+                .map(|ns| ns.mount)
+                .unwrap_or(false);
+            if !has_mount_ns {
+                return Err(SandboxError::Validation(
+                    "a filesystem jail (pivot_root/chroot) requires a mount namespace; \
+                     add .namespaces(NamespaceSet::new().mount())"
+                        .into(),
+                ));
+            }
+        }
+
+        // A user namespace without a mount namespace means uid_map is written
+        // but pseudo-filesystems inside the sandbox cannot be mounted.
+        // This is not an error by itself — warn rather than block.
+
         Ok(())
     }
 }

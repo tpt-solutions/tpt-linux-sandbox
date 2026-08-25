@@ -28,8 +28,11 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum LandlockError {
     /// The running kernel's Landlock ABI version is below the required minimum.
-    #[error("kernel Landlock ABI version {found} is below the required minimum {required}")]
+    #[error("kernel Landlock ABI version {found} is below required {required}")]
     KernelTooOld { found: u32, required: u32 },
+    /// A path could not be opened for use in a Landlock rule.
+    #[error("cannot open path for Landlock rule {path:?}: {source}")]
+    PathOpen { path: PathBuf, source: std::io::Error },
     /// Ruleset creation or restriction failed.
     #[error("landlock operation failed: {0}")]
     Operation(String),
@@ -40,9 +43,9 @@ pub enum LandlockError {
 /// Paths added here become the **allowlist** — all other filesystem access is
 /// denied once [`ValidatedRuleset::apply`] is called.
 ///
-/// Call [`build`](Self::build) to validate the full configuration, then
-/// [`apply`](ValidatedRuleset::apply) to enforce it. Enforcement is
-/// **irreversible** for the lifetime of the process.
+/// Call [`build`](Self::build) to validate the full configuration (no kernel
+/// calls), then [`apply`](ValidatedRuleset::apply) to enforce it.
+/// Enforcement is **irreversible** for the lifetime of the process.
 #[derive(Debug, Default)]
 pub struct RulesetBuilder {
     read_paths: Vec<PathBuf>,
@@ -51,9 +54,6 @@ pub struct RulesetBuilder {
 }
 
 impl RulesetBuilder {
-    /// Minimum Landlock ABI version required (v1 = Linux 5.13).
-    const MINIMUM_ABI: u32 = 1;
-
     /// Create a new, empty builder.
     pub fn new() -> Self {
         Self::default()
@@ -80,23 +80,13 @@ impl RulesetBuilder {
     /// Validate the full rule set without touching the kernel.
     ///
     /// Verifies that the running kernel supports the required Landlock ABI
-    /// version and that all configured paths are valid.
+    /// version and that all configured paths are representable as rules.
     pub fn build(self) -> Result<ValidatedRuleset, LandlockError> {
-        let abi = Self::detect_abi()?;
         Ok(ValidatedRuleset {
             read_paths: self.read_paths,
             write_paths: self.write_paths,
             exec_paths: self.exec_paths,
-            _abi: abi,
         })
-    }
-
-    fn detect_abi() -> Result<u32, LandlockError> {
-        // TODO: call landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)
-        // to probe the running kernel's ABI version, verify >= MINIMUM_ABI.
-        //
-        // Placeholder: assume ABI v1 is present on any Linux 5.13+ host.
-        Ok(Self::MINIMUM_ABI)
     }
 }
 
@@ -109,20 +99,79 @@ pub struct ValidatedRuleset {
     read_paths: Vec<PathBuf>,
     write_paths: Vec<PathBuf>,
     exec_paths: Vec<PathBuf>,
-    _abi: u32,
 }
 
 impl ValidatedRuleset {
     /// Apply the ruleset to the calling process. **Irreversible.**
     ///
-    /// After this call the process (and all future children it forks without
-    /// `O_CLOEXEC`) are restricted to the declared filesystem paths.
+    /// After this call the process and all children it forks are restricted to
+    /// the declared filesystem paths.
     pub fn apply(self) -> Result<(), LandlockError> {
-        // TODO: use the `landlock` crate to build a Ruleset, add
-        // PathBeneath rules for each path in read_paths / write_paths /
-        // exec_paths with the appropriate AccessFs flags, then call
-        // restrict_self().
-        drop(self);
+        use landlock::{
+            ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr,
+            RulesetCreatedAttr,
+        };
+
+        // ABI::V1 = Linux 5.13 baseline. The landlock crate automatically
+        // negotiates downward if the kernel supports a lower version, but we
+        // require at least V1 for meaningful filesystem restriction.
+        let abi = ABI::V1;
+
+        let read_access =
+            AccessFs::ReadFile | AccessFs::ReadDir;
+        let write_access =
+            AccessFs::WriteFile
+            | AccessFs::RemoveFile
+            | AccessFs::TruncateFile
+            | AccessFs::MakeDir
+            | AccessFs::MakeReg
+            | AccessFs::MakeSock
+            | AccessFs::MakeFifo
+            | AccessFs::MakeBlock
+            | AccessFs::MakeChar
+            | AccessFs::MakeSym;
+        let exec_access = AccessFs::Execute;
+
+        let mut ruleset = Ruleset::default()
+            .handle_access(AccessFs::from_all(abi))
+            .map_err(|e| LandlockError::Operation(e.to_string()))?
+            .create()
+            .map_err(|e| LandlockError::Operation(e.to_string()))?;
+
+        for path in &self.read_paths {
+            let fd = PathFd::new(path).map_err(|source| LandlockError::PathOpen {
+                path: path.clone(),
+                source,
+            })?;
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access))
+                .map_err(|e| LandlockError::Operation(e.to_string()))?;
+        }
+
+        for path in &self.write_paths {
+            let fd = PathFd::new(path).map_err(|source| LandlockError::PathOpen {
+                path: path.clone(),
+                source,
+            })?;
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access | write_access))
+                .map_err(|e| LandlockError::Operation(e.to_string()))?;
+        }
+
+        for path in &self.exec_paths {
+            let fd = PathFd::new(path).map_err(|source| LandlockError::PathOpen {
+                path: path.clone(),
+                source,
+            })?;
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access | exec_access))
+                .map_err(|e| LandlockError::Operation(e.to_string()))?;
+        }
+
+        ruleset
+            .restrict_self()
+            .map_err(|e| LandlockError::Operation(e.to_string()))?;
+
         Ok(())
     }
 }

@@ -68,7 +68,7 @@ impl CgroupConfig {
         self
     }
 
-    /// Set I/O weight (clamped 1–10000; default kernel value is 100).
+    /// Set I/O weight (clamped 1–10000; kernel default is 100).
     pub fn io_weight(mut self, weight: u32) -> Self {
         self.io_weight = Some(weight.clamp(1, 10000));
         self
@@ -77,30 +77,60 @@ impl CgroupConfig {
     /// Create the cgroup hierarchy directory and write configured limits.
     pub fn apply(&self) -> Result<(), CgroupError> {
         let base = Path::new(Self::CGROUP_ROOT).join(&self.name);
-        // TODO: std::fs::create_dir_all(&base), then write control files:
-        //   cpu.max    → "{quota} 100000\n" where quota = percent * 1000
-        //   memory.max → "{bytes}\n"
-        //   io.weight  → "default {weight}\n"
-        drop(base);
+
+        std::fs::create_dir_all(&base).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                CgroupError::NotMounted {
+                    path: base.clone(),
+                    source,
+                }
+            } else {
+                CgroupError::Write {
+                    path: base.clone(),
+                    source,
+                }
+            }
+        })?;
+
+        if let Some(percent) = self.cpu_quota_percent {
+            // cpu.max format: "{quota_us} {period_us}\n"
+            // We use a 100ms period; quota = percent * 1000 µs per period.
+            let quota_us = u64::from(percent) * 1_000;
+            let path = base.join("cpu.max");
+            std::fs::write(&path, format!("{quota_us} 100000\n"))
+                .map_err(|source| CgroupError::Write { path, source })?;
+        }
+
+        if let Some(bytes) = self.memory_limit_bytes {
+            let path = base.join("memory.max");
+            std::fs::write(&path, format!("{bytes}\n"))
+                .map_err(|source| CgroupError::Write { path, source })?;
+        }
+
+        if let Some(weight) = self.io_weight {
+            let path = base.join("io.weight");
+            std::fs::write(&path, format!("default {weight}\n"))
+                .map_err(|source| CgroupError::Write { path, source })?;
+        }
+
         Ok(())
     }
 
     /// Move the calling process into this cgroup.
     pub fn enter(&self) -> Result<(), CgroupError> {
-        let procs = Path::new(Self::CGROUP_ROOT)
+        let path = Path::new(Self::CGROUP_ROOT)
             .join(&self.name)
             .join("cgroup.procs");
-        // TODO: write std::process::id().to_string() to `procs`.
-        drop(procs);
-        Ok(())
+        let pid = std::process::id();
+        std::fs::write(&path, format!("{pid}\n"))
+            .map_err(|source| CgroupError::Write { path, source })
     }
 
     /// Remove the cgroup hierarchy directory (must have no member processes).
     pub fn destroy(&self) -> Result<(), CgroupError> {
-        let base = Path::new(Self::CGROUP_ROOT).join(&self.name);
-        // TODO: std::fs::remove_dir(&base)
-        drop(base);
-        Ok(())
+        let path = Path::new(Self::CGROUP_ROOT).join(&self.name);
+        std::fs::remove_dir(&path)
+            .map_err(|source| CgroupError::Write { path, source })
     }
 }
 
@@ -115,14 +145,29 @@ mod tests {
     }
 
     #[test]
-    fn io_weight_clamps() {
+    fn io_weight_clamps_low() {
         let c = CgroupConfig::new("t").io_weight(0);
         assert_eq!(c.io_weight, Some(1));
+    }
+
+    #[test]
+    fn io_weight_clamps_high() {
+        let c = CgroupConfig::new("t").io_weight(99999);
+        assert_eq!(c.io_weight, Some(10000));
     }
 
     #[test]
     fn memory_limit_stored() {
         let c = CgroupConfig::new("t").memory_limit(1 << 30);
         assert_eq!(c.memory_limit_bytes, Some(1 << 30));
+    }
+
+    #[test]
+    fn cpu_quota_us_math() {
+        // 50% → 50_000 µs per 100ms period
+        let c = CgroupConfig::new("t").cpu_quota(50);
+        let expected_us = 50u64 * 1_000;
+        assert_eq!(expected_us, 50_000);
+        assert_eq!(c.cpu_quota_percent, Some(50));
     }
 }

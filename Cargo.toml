@@ -27,7 +27,7 @@ homepage = "https://github.com/TPT-Solutions/tpt-linux-sandbox"
 landlock = "0.4"
 seccompiler = "0.4"
 caps = "0.5"
-nix = { version = "0.29", features = ["user", "fs", "mount", "process", "signal"] }
+nix = { version = "0.29", features = ["user", "fs", "mount", "process", "signal", "sched"] }
 libc = "0.2"
 # Async
 tokio = { version = "1", features = ["full"] }

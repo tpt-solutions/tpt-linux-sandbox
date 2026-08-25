@@ -23,7 +23,7 @@ use thiserror::Error;
 pub enum NamespaceError {
     /// `unshare(2)` returned an error.
     #[error("unshare(2) failed: {0}")]
-    Unshare(#[from] std::io::Error),
+    Unshare(std::io::Error),
     /// Writing the UID or GID map failed.
     #[error("UID/GID map write failed: {0}")]
     UidMap(std::io::Error),
@@ -35,10 +35,10 @@ pub enum NamespaceError {
 /// then call [`apply`](Self::apply).
 #[derive(Debug, Default, Clone)]
 pub struct NamespaceSet {
-    user: bool,
-    mount: bool,
-    pid: bool,
-    network: bool,
+    pub(crate) user: bool,
+    pub(crate) mount: bool,
+    pub(crate) pid: bool,
+    pub(crate) network: bool,
 }
 
 impl NamespaceSet {
@@ -50,9 +50,9 @@ impl NamespaceSet {
 
     /// Unshare the user namespace.
     ///
-    /// Required for unprivileged sandboxing; enables UID/GID mapping so that
-    /// the process appears as root inside the namespace while remaining
-    /// unprivileged outside it.
+    /// Required for unprivileged sandboxing; enables UID/GID mapping so the
+    /// process appears as root inside the namespace while remaining unprivileged
+    /// outside it.
     pub fn user(mut self) -> Self {
         self.user = true;
         self
@@ -83,10 +83,34 @@ impl NamespaceSet {
     /// after the `unshare` call so the process retains a valid identity inside
     /// the new namespace.
     pub fn apply(self) -> Result<(), NamespaceError> {
-        // TODO: build CLONE_NEW* bitmask from self.user / .mount / .pid / .network,
-        // call nix::sched::unshare(CloneFlags), then if self.user write
-        // /proc/self/uid_map and /proc/self/gid_map with a 0→uid 1 mapping.
-        drop(self);
+        use nix::sched::{unshare, CloneFlags};
+        use nix::unistd::{getgid, getuid};
+
+        let mut flags = CloneFlags::empty();
+        if self.user    { flags |= CloneFlags::CLONE_NEWUSER; }
+        if self.mount   { flags |= CloneFlags::CLONE_NEWNS; }
+        if self.pid     { flags |= CloneFlags::CLONE_NEWPID; }
+        if self.network { flags |= CloneFlags::CLONE_NEWNET; }
+
+        if flags.is_empty() {
+            return Ok(());
+        }
+
+        unshare(flags)
+            .map_err(|e| NamespaceError::Unshare(std::io::Error::from_raw_os_error(e as i32)))?;
+
+        if self.user {
+            let uid = getuid();
+            let gid = getgid();
+            // Must write "deny" to setgroups before gid_map (Linux 3.19+).
+            std::fs::write("/proc/self/setgroups", "deny\n")
+                .map_err(NamespaceError::UidMap)?;
+            std::fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))
+                .map_err(NamespaceError::UidMap)?;
+            std::fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))
+                .map_err(NamespaceError::UidMap)?;
+        }
+
         Ok(())
     }
 }
@@ -108,5 +132,11 @@ mod tests {
         assert!(ns.mount);
         assert!(!ns.pid);
         assert!(ns.network);
+    }
+
+    #[test]
+    fn all_flags() {
+        let ns = NamespaceSet::new().user().mount().pid().network();
+        assert!(ns.user && ns.mount && ns.pid && ns.network);
     }
 }
