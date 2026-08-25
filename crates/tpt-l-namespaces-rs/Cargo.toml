@@ -1,0 +1,17 @@
+[package]
+name = "tpt-l-namespaces-rs"
+version = "0.1.0"
+description = "Safe wrappers around unshare(2) and clone3(2) for Linux namespaces"
+keywords = ["namespaces", "sandbox", "linux", "unshare", "isolation"]
+categories = ["os", "api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nix.workspace = true
+libc.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "tpt-l-caps-drop"
+version = "0.1.0"
+description = "Ergonomic Linux capability dropping — drop-all with explicit keep list"
+keywords = ["capabilities", "linux", "sandbox", "security", "privilege"]
+categories = ["os", "api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+caps.workspace = true
+thiserror.workspace = true

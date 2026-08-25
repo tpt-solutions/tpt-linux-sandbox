@@ -1,0 +1,21 @@
+[package]
+name = "tpt-l-sandbox"
+version = "0.1.0"
+description = "Composable Linux sandbox orchestrator — Landlock + seccomp + namespaces + cgroups"
+keywords = ["sandbox", "linux", "landlock", "seccomp", "security"]
+categories = ["os", "api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+tpt-l-landlock-highlevel.workspace = true
+tpt-l-seccomp-builder.workspace = true
+tpt-l-namespaces-rs.workspace = true
+tpt-l-cgroup-v2.workspace = true
+tpt-l-caps-drop.workspace = true
+tpt-l-chroot-jail.workspace = true
+thiserror.workspace = true

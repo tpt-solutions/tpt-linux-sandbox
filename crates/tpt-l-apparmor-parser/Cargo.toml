@@ -1,0 +1,16 @@
+[package]
+name = "tpt-l-apparmor-parser"
+version = "0.1.0"
+description = "Parser and validator for AppArmor profiles; emits Landlock rules where mappable"
+keywords = ["apparmor", "security", "linux", "parser", "landlock"]
+categories = ["parsing", "os"]
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+nom.workspace = true
+thiserror.workspace = true

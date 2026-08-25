@@ -1,0 +1,16 @@
+[package]
+name = "tpt-l-landlock-highlevel"
+version = "0.1.0"
+description = "Declarative builder API for Linux Landlock filesystem restrictions"
+keywords = ["landlock", "sandbox", "security", "linux", "filesystem"]
+categories = ["os", "api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+landlock.workspace = true
+thiserror.workspace = true
