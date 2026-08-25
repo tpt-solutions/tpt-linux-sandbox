@@ -11,6 +11,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "tpt-sandbox"
 path = "src/main.rs"

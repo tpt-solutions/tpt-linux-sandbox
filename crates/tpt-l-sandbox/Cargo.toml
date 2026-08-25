@@ -11,6 +11,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 tpt-l-landlock-highlevel.workspace = true
 tpt-l-seccomp-builder.workspace = true

@@ -123,11 +123,11 @@
 - [x] Unit tests: `tpt-l-sandbox` (state machine ordering, validation errors)
 - [ ] Integration test: `tpt-l-sandbox-cli --allow-read /etc -- cat /etc/hostname` succeeds
 - [ ] Integration test: `tpt-l-sandbox-cli --allow-read /etc -- cat /tmp/secret` fails/blocked
-- [ ] `#![deny(missing_docs)]` workspace-wide
-- [ ] Rustdoc for all public APIs
-- [ ] `clippy::pedantic` lint pass clean
-- [ ] `cargo deny` config — license audit + dependency advisory check
-- [ ] crates.io publish metadata (`keywords`, `categories`, `description`) for all 11 crates
+- [x] `missing_docs` warn — `[workspace.lints.rust]` in root Cargo.toml
+- [x] Rustdoc for all public APIs — all public items have doc comments
+- [x] `clippy::pedantic` warn — `[workspace.lints.clippy]` in root Cargo.toml
+- [x] `cargo deny` config — `deny.toml` with license + advisory checks
+- [x] crates.io publish metadata (`keywords`, `categories`, `description`) for all 11 crates
 
 ---
 

@@ -11,6 +11,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
-nom.workspace = true
 thiserror.workspace = true
