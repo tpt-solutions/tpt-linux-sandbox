@@ -1,0 +1,18 @@
+[package]
+name = "tpt-l-chroot-jail"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Minimal chroot setup with pivot_root and pseudo-filesystem mounting"
+
+[dependencies]
+libc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

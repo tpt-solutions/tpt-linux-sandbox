@@ -1,0 +1,29 @@
+[package]
+name = "tpt-l-sandbox-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "CLI frontend for tpt-l-sandbox — a pure-Rust alternative to bwrap/firejail"
+
+[[bin]]
+name = "tpt-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+tpt-l-sandbox = { path = "../tpt-l-sandbox" }
+clap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

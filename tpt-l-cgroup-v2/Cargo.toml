@@ -1,0 +1,17 @@
+[package]
+name = "tpt-l-cgroup-v2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Manages cgroup v2 hierarchies for CPU/memory/I/O limits"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

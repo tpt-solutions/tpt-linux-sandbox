@@ -1,0 +1,25 @@
+[package]
+name = "tpt-l-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Composable sandbox orchestrator: Landlock + seccomp + namespaces + cgroups"
+
+[dependencies]
+tpt-l-landlock-highlevel = { path = "../tpt-l-landlock-highlevel" }
+tpt-l-seccomp-builder = { path = "../tpt-l-seccomp-builder" }
+tpt-l-namespaces-rs = { path = "../tpt-l-namespaces-rs" }
+tpt-l-cgroup-v2 = { path = "../tpt-l-cgroup-v2" }
+tpt-l-caps-drop = { path = "../tpt-l-caps-drop" }
+tpt-l-chroot-jail = { path = "../tpt-l-chroot-jail" }
+tpt-l-audit-logger = { path = "../tpt-l-audit-logger" }
+libc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

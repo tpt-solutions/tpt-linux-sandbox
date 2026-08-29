@@ -1,0 +1,18 @@
+[package]
+name = "tpt-l-apparmor-parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "AppArmor profile textual format parser with Landlock rule emission"
+
+[dependencies]
+nom = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]

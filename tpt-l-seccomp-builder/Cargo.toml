@@ -1,0 +1,19 @@
+[package]
+name = "tpt-l-seccomp-builder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "High-level DSL over seccompiler/BPF filter generation for syscall policies"
+
+[dependencies]
+seccompiler = { workspace = true }
+libc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
