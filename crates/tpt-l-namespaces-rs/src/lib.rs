@@ -64,6 +64,12 @@ impl NamespaceSet {
         self
     }
 
+    /// Returns `true` if the mount namespace has been requested.
+    #[must_use]
+    pub fn has_mount(&self) -> bool {
+        self.mount
+    }
+
     /// Unshare the PID namespace.
     pub fn pid(mut self) -> Self {
         self.pid = true;
