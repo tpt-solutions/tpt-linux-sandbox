@@ -26,7 +26,7 @@ must_use_candidate = "allow"
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-authors = ["TPT Solutions <phillip@icb.co.nz>"]
+authors = ["TPT Solutions"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/TPT-Solutions/tpt-linux-sandbox"
 

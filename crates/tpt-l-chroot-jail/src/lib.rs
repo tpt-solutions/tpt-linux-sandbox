@@ -38,7 +38,9 @@ pub enum JailError {
     /// Mounting a pseudo-filesystem failed.
     #[error("mount failed for {path}: {source}")]
     Mount {
+        /// The mount target that failed.
         path: PathBuf,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
 }

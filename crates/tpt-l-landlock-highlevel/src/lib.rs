@@ -29,11 +29,18 @@ use thiserror::Error;
 pub enum LandlockError {
     /// The running kernel's Landlock ABI version is below the required minimum.
     #[error("kernel Landlock ABI version {found} is below required {required}")]
-    KernelTooOld { found: u32, required: u32 },
+    KernelTooOld {
+        /// The ABI version reported by the running kernel.
+        found: u32,
+        /// The minimum ABI version this crate requires.
+        required: u32,
+    },
     /// A path could not be opened for use in a Landlock rule.
     #[error("cannot open path for Landlock rule {path:?}: {source}")]
     PathOpen {
+        /// The path that could not be opened.
         path: PathBuf,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
     /// Ruleset creation or restriction failed.
