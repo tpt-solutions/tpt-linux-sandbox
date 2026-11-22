@@ -7,9 +7,9 @@ Ergonomic Linux capability dropping. Start from "drop everything" and list the
 few capabilities the process still needs. The crate then reduces the process's
 permitted and effective capability sets to that keep list.
 
-It is a small, explicit alternative to hand-written `capset(2)` calls. It does
-not change the bounding set or inheritable set beyond what the underlying
-`caps` crate does for the calling thread.
+It is a small, explicit alternative to hand-written `capset(2)` calls. It
+changes the permitted, effective, and inheritable sets of the calling thread,
+and leaves the bounding set alone.
 
 ## Features
 
@@ -17,8 +17,8 @@ not change the bounding set or inheritable set beyond what the underlying
 - `drop_all()` opts in to dropping every capability not in the keep list.
 - `keep(cap)` adds a capability to retain. Full (`CAP_NET_ADMIN`) and short
   (`net_admin`) names are both accepted, case-insensitively.
-- `apply()` reads the permitted set, intersects it with the keep set, and
-  writes the result to the effective set.
+- `apply()` intersects the permitted set with the keep set, sets the effective
+  and permitted sets to the result, and clears the inheritable set.
 - Unknown capability names return `CapsError::UnknownCap` instead of being
   ignored.
 
