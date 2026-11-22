@@ -2,14 +2,14 @@
 name = "tpt-l-sandbox"
 version = "0.1.0"
 description = "Composable Linux sandbox orchestrator — Landlock + seccomp + namespaces + cgroups"
-keywords = ["sandbox", "linux", "landlock", "seccomp", "security"]
-categories = ["os", "api-bindings"]
+readme = "README.md"
+keywords = ["sandbox", "landlock", "seccomp", "linux", "security"]
+categories = ["os::linux-apis"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
