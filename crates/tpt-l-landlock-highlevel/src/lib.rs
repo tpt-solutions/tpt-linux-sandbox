@@ -122,7 +122,7 @@ impl ValidatedRuleset {
         let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
         let write_access = AccessFs::WriteFile
             | AccessFs::RemoveFile
-            | AccessFs::TruncateFile
+            | AccessFs::Truncate
             | AccessFs::MakeDir
             | AccessFs::MakeReg
             | AccessFs::MakeSock
@@ -139,9 +139,9 @@ impl ValidatedRuleset {
             .map_err(|e| LandlockError::Operation(e.to_string()))?;
 
         for path in &self.read_paths {
-            let fd = PathFd::new(path).map_err(|source| LandlockError::PathOpen {
+            let fd = PathFd::new(path).map_err(|e| LandlockError::PathOpen {
                 path: path.clone(),
-                source,
+                source: std::io::Error::other(e),
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access))
@@ -149,9 +149,9 @@ impl ValidatedRuleset {
         }
 
         for path in &self.write_paths {
-            let fd = PathFd::new(path).map_err(|source| LandlockError::PathOpen {
+            let fd = PathFd::new(path).map_err(|e| LandlockError::PathOpen {
                 path: path.clone(),
-                source,
+                source: std::io::Error::other(e),
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access | write_access))
@@ -159,9 +159,9 @@ impl ValidatedRuleset {
         }
 
         for path in &self.exec_paths {
-            let fd = PathFd::new(path).map_err(|source| LandlockError::PathOpen {
+            let fd = PathFd::new(path).map_err(|e| LandlockError::PathOpen {
                 path: path.clone(),
-                source,
+                source: std::io::Error::other(e),
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access | exec_access))
