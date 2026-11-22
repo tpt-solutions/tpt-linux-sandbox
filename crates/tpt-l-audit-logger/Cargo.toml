@@ -2,14 +2,14 @@
 name = "tpt-l-audit-logger"
 version = "0.1.0"
 description = "Async reader and parser for the Linux kernel audit subsystem via NETLINK_AUDIT"
+readme = "README.md"
 keywords = ["audit", "linux", "netlink", "tokio", "security"]
-categories = ["os", "asynchronous"]
+categories = ["os::linux-apis", "asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
