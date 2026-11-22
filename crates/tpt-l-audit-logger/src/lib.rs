@@ -58,8 +58,8 @@ impl AuditEvent {
     ///
     /// Expects the format produced by the kernel: `key=value key=value ...`
     pub fn parse(record_type: AuditRecordType, body: &str) -> Self {
-        let fields = body
-            .split_whitespace()
+        let fields = split_fields(body)
+            .into_iter()
             .filter_map(|token| {
                 let (k, v) = token.split_once('=')?;
                 Some((k.to_owned(), v.trim_matches('"').to_owned()))
@@ -70,6 +70,35 @@ impl AuditEvent {
             fields,
         }
     }
+}
+
+/// Split an audit body on whitespace, keeping double-quoted sections intact so
+/// that `key="some value"` remains a single token.
+fn split_fields(body: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut in_quotes = false;
+
+    for (i, c) in body.char_indices() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                start.get_or_insert(i);
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if let Some(s) = start.take() {
+                    tokens.push(&body[s..i]);
+                }
+            }
+            _ => {
+                start.get_or_insert(i);
+            }
+        }
+    }
+    if let Some(s) = start {
+        tokens.push(&body[s..]);
+    }
+    tokens
 }
 
 // Netlink message header layout.
@@ -125,12 +154,10 @@ fn open_audit_socket() -> Result<std::os::fd::OwnedFd, AuditError> {
     }
 
     // Bind to multicast group 1 (AUDIT_NLGRP_READLOG).
-    let addr = libc::sockaddr_nl {
-        nl_family: libc::AF_NETLINK as u16,
-        nl_pad: 0,
-        nl_pid: 0,
-        nl_groups: 1,
-    };
+    // SAFETY: sockaddr_nl is a plain C struct; all-zero is a valid bit pattern.
+    let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    addr.nl_family = libc::AF_NETLINK as u16;
+    addr.nl_groups = 1;
     let ret = unsafe {
         libc::bind(
             fd,
