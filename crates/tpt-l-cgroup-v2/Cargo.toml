@@ -2,14 +2,14 @@
 name = "tpt-l-cgroup-v2"
 version = "0.1.0"
 description = "cgroup v2 hierarchy management for CPU, memory, and I/O limits"
-keywords = ["cgroup", "linux", "resources", "sandbox", "isolation"]
-categories = ["os", "api-bindings"]
+readme = "README.md"
+keywords = ["cgroup", "cgroups-v2", "linux", "resources", "isolation"]
+categories = ["os::linux-apis"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
