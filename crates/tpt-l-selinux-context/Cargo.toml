@@ -2,14 +2,14 @@
 name = "tpt-l-selinux-context"
 version = "0.1.0"
 description = "Parse and manipulate SELinux security contexts without libselinux"
-keywords = ["selinux", "security", "linux", "context", "mac"]
-categories = ["os", "parsing"]
+readme = "README.md"
+keywords = ["selinux", "security-context", "linux", "mac", "parsing"]
+categories = ["parser-implementations", "os::linux-apis"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
