@@ -2,14 +2,14 @@
 name = "tpt-l-seccomp-builder"
 version = "0.1.0"
 description = "High-level DSL for building and applying seccomp BPF syscall filters"
-keywords = ["seccomp", "sandbox", "bpf", "syscall", "linux"]
-categories = ["os", "api-bindings"]
+readme = "README.md"
+keywords = ["seccomp", "bpf", "syscall", "sandbox", "linux"]
+categories = ["os::linux-apis"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
