@@ -29,7 +29,6 @@ rust-version = "1.85"
 authors = ["TPT Solutions <phillip@icb.co.nz>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/TPT-Solutions/tpt-linux-sandbox"
-homepage = "https://github.com/TPT-Solutions/tpt-linux-sandbox"
 
 [workspace.dependencies]
 # Sandboxing primitives
@@ -45,8 +44,6 @@ thiserror = "2"
 anyhow = "1"
 # CLI
 clap = { version = "4", features = ["derive"] }
-# Parsing
-nom = "7"
 # Workspace members
 tpt-l-landlock-highlevel = { path = "crates/tpt-l-landlock-highlevel" }
 tpt-l-seccomp-builder    = { path = "crates/tpt-l-seccomp-builder" }
@@ -54,7 +51,4 @@ tpt-l-namespaces-rs      = { path = "crates/tpt-l-namespaces-rs" }
 tpt-l-cgroup-v2          = { path = "crates/tpt-l-cgroup-v2" }
 tpt-l-caps-drop          = { path = "crates/tpt-l-caps-drop" }
 tpt-l-chroot-jail        = { path = "crates/tpt-l-chroot-jail" }
-tpt-l-apparmor-parser    = { path = "crates/tpt-l-apparmor-parser" }
-tpt-l-selinux-context    = { path = "crates/tpt-l-selinux-context" }
-tpt-l-audit-logger       = { path = "crates/tpt-l-audit-logger" }
 tpt-l-sandbox            = { path = "crates/tpt-l-sandbox" }
