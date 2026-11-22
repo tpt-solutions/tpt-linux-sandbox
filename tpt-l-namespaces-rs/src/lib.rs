@@ -28,7 +28,7 @@ pub enum NamespaceError {
 
 bitflags::bitflags! {
     /// Flags for namespace types that can be unshared.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub struct NamespaceFlags: c_int {
         /// Mount namespace — isolate filesystem mount points.
         const MOUNT = CLONE_NEWNS;
