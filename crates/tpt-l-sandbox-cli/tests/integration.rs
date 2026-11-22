@@ -42,10 +42,13 @@ fn cli_allow_read_etc_blocks_tmp() {
 fn cli_no_network_blocks_socket() {
     let output = Command::new(cli_binary())
         .args([
-            "--allow-read", "/etc",
+            "--allow-read",
+            "/etc",
             "--no-network",
             "--",
-            "python3", "-c", "import socket; socket.socket()",
+            "python3",
+            "-c",
+            "import socket; socket.socket()",
         ])
         .output()
         .expect("failed to execute CLI");
@@ -60,10 +63,14 @@ fn cli_no_network_blocks_socket() {
 fn cli_memory_limit_enforced() {
     let output = Command::new(cli_binary())
         .args([
-            "--allow-read", "/etc",
-            "--memory-limit", "1048576", // 1 MiB
+            "--allow-read",
+            "/etc",
+            "--memory-limit",
+            "1048576", // 1 MiB
             "--",
-            "python3", "-c", "a = 'x' * 10 * 1024 * 1024", // try to alloc 10 MiB
+            "python3",
+            "-c",
+            "a = 'x' * 10 * 1024 * 1024", // try to alloc 10 MiB
         ])
         .output()
         .expect("failed to execute CLI");
@@ -78,10 +85,14 @@ fn cli_memory_limit_enforced() {
 fn cli_drop_caps_blocks_mount() {
     let output = Command::new(cli_binary())
         .args([
-            "--allow-read", "/etc",
+            "--allow-read",
+            "/etc",
             "--drop-caps",
             "--",
-            "mount", "--bind", "/etc", "/tmp/mnt",
+            "mount",
+            "--bind",
+            "/etc",
+            "/tmp/mnt",
         ])
         .output()
         .expect("failed to execute CLI");
