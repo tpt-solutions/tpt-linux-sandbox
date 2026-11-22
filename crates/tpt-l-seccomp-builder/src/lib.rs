@@ -126,7 +126,7 @@ impl SeccompPolicy {
 
         let program: BpfProgram = filter
             .try_into()
-            .map_err(|e: seccompiler::Error| SeccompError::Compile(e.to_string()))?;
+            .map_err(|e: seccompiler::BackendError| SeccompError::Compile(e.to_string()))?;
 
         seccompiler::apply_filter(&program).map_err(|e| SeccompError::Load(e.to_string()))?;
 
