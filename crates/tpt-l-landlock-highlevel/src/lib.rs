@@ -168,9 +168,18 @@ impl ValidatedRuleset {
                 .map_err(|e| LandlockError::Operation(e.to_string()))?;
         }
 
-        ruleset
+        let status = ruleset
             .restrict_self()
             .map_err(|e| LandlockError::Operation(e.to_string()))?;
+
+        // The landlock crate reports an unsupported kernel as `Ok` with
+        // `NotEnforced` rather than as an error. Treat that as a failure so
+        // callers never believe a restriction is active when it is not.
+        if status.ruleset == landlock::RulesetStatus::NotEnforced {
+            return Err(LandlockError::Operation(
+                "Landlock is not enforced by this kernel; the ruleset was not applied".to_owned(),
+            ));
+        }
 
         Ok(())
     }
