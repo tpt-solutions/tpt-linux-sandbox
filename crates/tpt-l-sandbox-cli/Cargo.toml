@@ -2,14 +2,14 @@
 name = "tpt-l-sandbox-cli"
 version = "0.1.0"
 description = "Pure-Rust sandboxed command runner — composable alternative to bwrap and firejail"
-keywords = ["sandbox", "linux", "bwrap", "firejail", "security"]
-categories = ["command-line-utilities", "os"]
+readme = "README.md"
+keywords = ["sandbox", "bwrap", "firejail", "linux", "security"]
+categories = ["command-line-utilities", "os::linux-apis"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
