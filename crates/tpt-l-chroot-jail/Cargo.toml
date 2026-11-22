@@ -2,14 +2,14 @@
 name = "tpt-l-chroot-jail"
 version = "0.1.0"
 description = "Minimal pivot_root and chroot jail setup with pseudo-filesystem mounting"
+readme = "README.md"
 keywords = ["chroot", "pivot-root", "sandbox", "linux", "filesystem"]
-categories = ["os", "api-bindings"]
+categories = ["os::linux-apis", "filesystem"]
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [lints]
 workspace = true
