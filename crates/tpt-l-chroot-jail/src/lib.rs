@@ -37,7 +37,10 @@ pub enum JailError {
     Chroot(std::io::Error),
     /// Mounting a pseudo-filesystem failed.
     #[error("mount failed for {path}: {source}")]
-    Mount { path: PathBuf, source: std::io::Error },
+    Mount {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Configuration for setting up a `pivot_root` / chroot jail.
@@ -83,7 +86,7 @@ impl JailConfig {
     /// Attempts `pivot_root(2)` first. Falls back to `chroot(2)` with a
     /// warning if the call is unavailable (e.g. no mount namespace).
     pub fn apply(self) -> Result<(), JailError> {
-        use nix::mount::{mount, MsFlags};
+        use nix::mount::{MsFlags, mount};
 
         if !self.new_root.exists() {
             return Err(JailError::RootNotFound(self.new_root.clone()));
@@ -152,17 +155,18 @@ impl JailConfig {
 
         // Create a temporary directory inside new_root to receive the old root.
         let put_old = self.new_root.join(".put_old");
-        std::fs::create_dir_all(&put_old)
-            .map_err(|e| JailError::PivotRoot(e))?;
+        std::fs::create_dir_all(&put_old).map_err(|e| JailError::PivotRoot(e))?;
 
         // Try pivot_root; fall back to chroot on ENOSYS / EINVAL.
         match nix::unistd::pivot_root(&self.new_root, &put_old) {
             Ok(()) => {
-                nix::unistd::chdir("/")
-                    .map_err(|e| JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32)))?;
+                nix::unistd::chdir("/").map_err(|e| {
+                    JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32))
+                })?;
                 // Unmount the old root lazily and remove the directory.
-                nix::mount::umount2("/.put_old", nix::mount::MntFlags::MNT_DETACH)
-                    .map_err(|e| JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32)))?;
+                nix::mount::umount2("/.put_old", nix::mount::MntFlags::MNT_DETACH).map_err(
+                    |e| JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32)),
+                )?;
                 std::fs::remove_dir("/.put_old").ok();
             }
             Err(nix::errno::Errno::ENOSYS) | Err(nix::errno::Errno::EINVAL) => {
@@ -177,7 +181,9 @@ impl JailConfig {
                     .map_err(|e| JailError::Chroot(std::io::Error::from_raw_os_error(e as i32)))?;
             }
             Err(e) => {
-                return Err(JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32)));
+                return Err(JailError::PivotRoot(std::io::Error::from_raw_os_error(
+                    e as i32,
+                )));
             }
         }
 

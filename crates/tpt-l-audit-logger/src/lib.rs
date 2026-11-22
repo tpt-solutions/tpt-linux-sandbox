@@ -65,7 +65,10 @@ impl AuditEvent {
                 Some((k.to_owned(), v.trim_matches('"').to_owned()))
             })
             .collect();
-        AuditEvent { record_type, fields }
+        AuditEvent {
+            record_type,
+            fields,
+        }
     }
 }
 
@@ -151,14 +154,7 @@ fn reader_loop(fd: std::os::fd::OwnedFd, tx: mpsc::Sender<AuditEvent>) {
     let mut buf = vec![0u8; RECV_BUF];
 
     loop {
-        let n = unsafe {
-            libc::recv(
-                raw,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                0,
-            )
-        };
+        let n = unsafe { libc::recv(raw, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
         if n <= 0 {
             break;
         }
@@ -197,7 +193,10 @@ mod tests {
 
     #[test]
     fn parse_simple_record() {
-        let ev = AuditEvent::parse(1300, r#"arch=c000003e syscall=2 success=yes exe="/bin/cat""#);
+        let ev = AuditEvent::parse(
+            1300,
+            r#"arch=c000003e syscall=2 success=yes exe="/bin/cat""#,
+        );
         assert_eq!(ev.record_type, 1300);
         let map: std::collections::HashMap<_, _> = ev.fields.into_iter().collect();
         assert_eq!(map["syscall"], "2");

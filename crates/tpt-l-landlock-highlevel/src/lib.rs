@@ -32,7 +32,10 @@ pub enum LandlockError {
     KernelTooOld { found: u32, required: u32 },
     /// A path could not be opened for use in a Landlock rule.
     #[error("cannot open path for Landlock rule {path:?}: {source}")]
-    PathOpen { path: PathBuf, source: std::io::Error },
+    PathOpen {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Ruleset creation or restriction failed.
     #[error("landlock operation failed: {0}")]
     Operation(String),
@@ -108,8 +111,7 @@ impl ValidatedRuleset {
     /// the declared filesystem paths.
     pub fn apply(self) -> Result<(), LandlockError> {
         use landlock::{
-            ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr,
-            RulesetCreatedAttr,
+            ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
         };
 
         // ABI::V1 = Linux 5.13 baseline. The landlock crate automatically
@@ -117,10 +119,8 @@ impl ValidatedRuleset {
         // require at least V1 for meaningful filesystem restriction.
         let abi = ABI::V1;
 
-        let read_access =
-            AccessFs::ReadFile | AccessFs::ReadDir;
-        let write_access =
-            AccessFs::WriteFile
+        let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
+        let write_access = AccessFs::WriteFile
             | AccessFs::RemoveFile
             | AccessFs::TruncateFile
             | AccessFs::MakeDir

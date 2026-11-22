@@ -54,7 +54,10 @@ impl SecurityContext {
             user: parts[0].to_owned(),
             role: parts[1].to_owned(),
             type_: parts[2].to_owned(),
-            level: parts.get(3).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+            level: parts
+                .get(3)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
         })
     }
 

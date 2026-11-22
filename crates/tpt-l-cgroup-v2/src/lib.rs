@@ -28,10 +28,16 @@ use thiserror::Error;
 pub enum CgroupError {
     /// The cgroupfs is not mounted where expected.
     #[error("cgroupfs not mounted at {path}: {source}")]
-    NotMounted { path: PathBuf, source: std::io::Error },
+    NotMounted {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Writing a cgroup control file failed.
     #[error("failed to write cgroup control file {path}: {source}")]
-    Write { path: PathBuf, source: std::io::Error },
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Configuration for a cgroup v2 hierarchy.
@@ -129,8 +135,7 @@ impl CgroupConfig {
     /// Remove the cgroup hierarchy directory (must have no member processes).
     pub fn destroy(&self) -> Result<(), CgroupError> {
         let path = Path::new(Self::CGROUP_ROOT).join(&self.name);
-        std::fs::remove_dir(&path)
-            .map_err(|source| CgroupError::Write { path, source })
+        std::fs::remove_dir(&path).map_err(|source| CgroupError::Write { path, source })
     }
 }
 

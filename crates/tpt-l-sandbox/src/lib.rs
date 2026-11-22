@@ -172,11 +172,7 @@ impl Sandbox {
         // A filesystem jail without a mount namespace is dangerous — pivot_root
         // would affect the system-wide mount table rather than an isolated copy.
         if self.jail.is_some() {
-            let has_mount_ns = self
-                .namespaces
-                .as_ref()
-                .map(|ns| ns.mount)
-                .unwrap_or(false);
+            let has_mount_ns = self.namespaces.as_ref().map(|ns| ns.mount).unwrap_or(false);
             if !has_mount_ns {
                 return Err(SandboxError::Validation(
                     "a filesystem jail (pivot_root/chroot) requires a mount namespace; \

@@ -89,13 +89,10 @@ impl CapsPolicy {
         }
 
         // Read the current permitted set and drop everything not in keep_set.
-        let permitted = caps::read(None, CapSet::Permitted)
-            .map_err(|e| CapsError::Operation(e.to_string()))?;
+        let permitted =
+            caps::read(None, CapSet::Permitted).map_err(|e| CapsError::Operation(e.to_string()))?;
 
-        let new_set: CapsHashSet = permitted
-            .intersection(&keep_set)
-            .copied()
-            .collect();
+        let new_set: CapsHashSet = permitted.intersection(&keep_set).copied().collect();
 
         caps::set(None, CapSet::Effective, &new_set)
             .map_err(|e| CapsError::Operation(e.to_string()))?;

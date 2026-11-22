@@ -190,11 +190,18 @@ impl AppArmorProfile {
         self.rules
             .iter()
             .filter_map(|r| match r {
-                Rule::File { path_pattern, permissions } => Some(LandlockFileRule {
+                Rule::File {
+                    path_pattern,
+                    permissions,
+                } => Some(LandlockFileRule {
                     path_pattern: path_pattern.clone(),
                     permissions: permissions.clone(),
                 }),
-                Rule::Network { domain, kind, protocol } => {
+                Rule::Network {
+                    domain,
+                    kind,
+                    protocol,
+                } => {
                     eprintln!(
                         "tpt-l-apparmor-parser: network rule \
                          (domain={domain} kind={kind} protocol={protocol}) \
@@ -203,9 +210,7 @@ impl AppArmorProfile {
                     None
                 }
                 Rule::Other(raw) => {
-                    eprintln!(
-                        "tpt-l-apparmor-parser: no Landlock mapping for rule: {raw:?}"
-                    );
+                    eprintln!("tpt-l-apparmor-parser: no Landlock mapping for rule: {raw:?}");
                     None
                 }
             })

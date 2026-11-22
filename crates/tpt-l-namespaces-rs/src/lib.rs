@@ -83,14 +83,22 @@ impl NamespaceSet {
     /// after the `unshare` call so the process retains a valid identity inside
     /// the new namespace.
     pub fn apply(self) -> Result<(), NamespaceError> {
-        use nix::sched::{unshare, CloneFlags};
+        use nix::sched::{CloneFlags, unshare};
         use nix::unistd::{getgid, getuid};
 
         let mut flags = CloneFlags::empty();
-        if self.user    { flags |= CloneFlags::CLONE_NEWUSER; }
-        if self.mount   { flags |= CloneFlags::CLONE_NEWNS; }
-        if self.pid     { flags |= CloneFlags::CLONE_NEWPID; }
-        if self.network { flags |= CloneFlags::CLONE_NEWNET; }
+        if self.user {
+            flags |= CloneFlags::CLONE_NEWUSER;
+        }
+        if self.mount {
+            flags |= CloneFlags::CLONE_NEWNS;
+        }
+        if self.pid {
+            flags |= CloneFlags::CLONE_NEWPID;
+        }
+        if self.network {
+            flags |= CloneFlags::CLONE_NEWNET;
+        }
 
         if flags.is_empty() {
             return Ok(());
@@ -103,8 +111,7 @@ impl NamespaceSet {
             let uid = getuid();
             let gid = getgid();
             // Must write "deny" to setgroups before gid_map (Linux 3.19+).
-            std::fs::write("/proc/self/setgroups", "deny\n")
-                .map_err(NamespaceError::UidMap)?;
+            std::fs::write("/proc/self/setgroups", "deny\n").map_err(NamespaceError::UidMap)?;
             std::fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))
                 .map_err(NamespaceError::UidMap)?;
             std::fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))
