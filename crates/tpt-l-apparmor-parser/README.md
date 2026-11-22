@@ -84,8 +84,8 @@ for lrule in profile.landlock_rules() {
   the AppArmor pattern (for example `/tmp/**`) unchanged. Landlock works on
   concrete paths, so the caller must resolve globs to real paths before
   building a ruleset.
-- **Only single profiles are handled.** Include directives and multiple
-  profiles in one file are not processed.
+- **`#include` is not followed.** Include directives are returned as
+  `Rule::Other` so they can be reported. Their contents are not loaded.
 - **Unmapped rules are reported, not enforced.** Anything without a Landlock
   equivalent (for example, some capability or signal rules) appears as
   `Rule::Other` or is omitted from `landlock_rules`. Treat the output as a
