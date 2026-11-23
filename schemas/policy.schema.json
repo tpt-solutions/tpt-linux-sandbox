@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TPT-Solutions/tpt-linux-sandbox/schemas/policy.schema.json",
+  "title": "tpt-sandbox policy",
+  "description": "Policy file for tpt-sandbox --policy. The same schema is used by the built-in profiles.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "allow_read": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths the command may read. Relative paths resolve against the current directory."
+    },
+    "allow_write": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths the command may read and write."
+    },
+    "allow_exec": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths the command may execute from."
+    },
+    "system_paths": {
+      "type": "boolean",
+      "default": true,
+      "description": "Grant read and exec on /usr, /bin, /sbin, /lib and /lib64 (those that exist)."
+    },
+    "no_network": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run in a network namespace with no external access."
+    },
+    "drop_caps": {
+      "type": "boolean",
+      "default": false,
+      "description": "Drop all Linux capabilities before exec."
+    },
+    "memory_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Memory limit in bytes (cgroup memory.max)."
+    },
+    "cpu_quota": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "CPU quota as a percentage of one core."
+    },
+    "pids_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of processes and threads (cgroup pids.max)."
+    },
+    "new_root": {
+      "type": "string",
+      "description": "Directory to use as the new root (pivot_root)."
+    },
+    "cwd": {
+      "type": "string",
+      "default": "/",
+      "description": "Working directory for the command (inside new_root if one is set)."
+    },
+    "seccomp": {
+      "type": "string",
+      "enum": ["enforce", "log", "off"],
+      "default": "enforce",
+      "description": "enforce: allowlist with EPERM for other calls. log: allow all, log only. off: no filter."
+    },
+    "pass_env": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Environment variables passed through in addition to PATH, TERM, LANG, LC_ALL and LC_CTYPE."
+    }
+  }
+}

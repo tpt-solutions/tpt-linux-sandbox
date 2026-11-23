@@ -1,0 +1,14 @@
+{
+  "name": "tpt-sandbox development",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "runArgs": [
+    "--security-opt", "seccomp=unconfined",
+    "--security-opt", "apparmor=unconfined"
+  ],
+  "postCreateCommand": "curl -fsSL https://raw.githubusercontent.com/TPT-Solutions/tpt-linux-sandbox/master/install.sh | sh && tpt-sandbox --doctor",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"]
+    }
+  }
+}

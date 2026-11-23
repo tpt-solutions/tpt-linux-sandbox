@@ -1,0 +1,55 @@
+name: "tpt-sandbox"
+description: "Run a command inside a Linux sandbox (Landlock, seccomp, namespaces, cgroups)."
+branding:
+  icon: "lock"
+  color: "gray-dark"
+
+inputs:
+  command:
+    description: "Shell command to run inside the sandbox."
+    required: true
+  profile:
+    description: "Built-in profile: strict, build, network-client, maintainer-script, untrusted-python, untrusted-node."
+    required: false
+    default: "strict"
+  policy:
+    description: "Optional path to a policy TOML file, applied after the profile."
+    required: false
+    default: ""
+  relax-apparmor-userns:
+    description: "On Ubuntu 24.04+ runners, allow unprivileged user namespaces (needs sudo)."
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Allow unprivileged user namespaces
+      if: inputs.relax-apparmor-userns == 'true'
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+    - name: Install tpt-sandbox
+      shell: bash
+      env:
+        INSTALL_DIR: ${{ runner.temp }}/tpt-sandbox-bin
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        sh "$ACTION_PATH/install.sh"
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+
+    - name: Run command in sandbox
+      shell: bash
+      env:
+        INSTALL_DIR: ${{ runner.temp }}/tpt-sandbox-bin
+        SANDBOX_PROFILE: ${{ inputs.profile }}
+        SANDBOX_POLICY: ${{ inputs.policy }}
+        SANDBOX_COMMAND: ${{ inputs.command }}
+      run: |
+        set -euo pipefail
+        args=(--profile "$SANDBOX_PROFILE")
+        if [ -n "$SANDBOX_POLICY" ]; then
+          args+=(--policy "$SANDBOX_POLICY")
+        fi
+        "$INSTALL_DIR/tpt-sandbox" "${args[@]}" -- bash -c "$SANDBOX_COMMAND"

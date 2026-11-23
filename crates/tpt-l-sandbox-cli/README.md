@@ -1,50 +1,57 @@
 # tpt-l-sandbox-cli
 
-[![crates.io](https://img.shields.io/crates/v/tpt-l-sandbox-cli.svg)](https://crates.io/crates/tpt-l-sandbox-cli)
-
 A command-line runner that executes a program inside the
 [`tpt-l-sandbox`](../tpt-l-sandbox) orchestrator. It is a pure-Rust alternative
-to `bwrap` and `firejail` for composing filesystem, namespace, resource, and
-capability restrictions from the shell.
-
-The installed binary is named `tpt-sandbox`.
+to `bwrap` and `firejail`. The installed binary is named `tpt-sandbox`.
 
 ## Features
 
-- Read-only and read-write filesystem allow-lists (`--allow-read`,
-  `--allow-write`), each repeatable.
+- Filesystem allowlists for read, write and execute (`--allow-read`,
+  `--allow-write`, `--allow-exec`), each repeatable, enforced by Landlock.
+- Standard system directories are readable and executable by default, so
+  ordinary programs start. `--no-system-paths` turns this off.
 - Network isolation with `--no-network`.
-- Memory and CPU limits through a cgroup v2 group (`--memory-limit`,
-  `--cpu-quota`).
-- Filesystem root change with `--new-root`.
+- Memory, CPU and process-count limits through a cgroup v2 group
+  (`--memory-limit`, `--cpu-quota`, `--pids-limit`).
+- A seccomp syscall allowlist, enforced by default (`--seccomp enforce`).
 - Capability dropping with `--drop-caps`.
-- Replaces itself with the target command (`exec`), so signals and exit status
-  go straight to the program.
+- A minimal environment: only `PATH`, `TERM`, `LANG`, `LC_ALL` and `LC_CTYPE`
+  reach the command, plus any `--pass-env` names.
+- Inherited file descriptors are closed, and the command gets a new session
+  (no controlling terminal).
+- Built-in profiles and TOML policy files, plus import from AppArmor profiles.
+- `--dry-run` to show the effective policy, `--doctor` to check the machine,
+  and `--learn` to draft a policy from a run.
+- `--json` for a machine-readable exit event.
 
 ## Requirements
 
-- Linux. Each option depends on the kernel features of the matching layer (see
-  [`tpt-l-sandbox`](../tpt-l-sandbox)).
-- Landlock (Linux 5.13+) for `--allow-read` and `--allow-write` to take effect.
-  Without it the command fails rather than running unrestricted.
-- Unprivileged user namespaces, or root, for `--no-network`, `--new-root`, and
-  any option that creates a namespace.
-- cgroup v2 with write access for `--memory-limit` and `--cpu-quota`.
+- Linux with Landlock (5.13 or newer). Without it setup fails rather than
+  running unrestricted.
+- Unprivileged user namespaces. Ubuntu 24.04 needs
+  `kernel.apparmor_restrict_unprivileged_userns=0`.
+- cgroup v2 with the `cpu`, `memory` and `pids` controllers delegated, for the
+  limit flags.
 - Rust 1.85 or newer to build from source.
+
+Run `tpt-sandbox --doctor` to see which of these your machine meets. See
+[troubleshooting](../../docs/troubleshooting.md) for fixes.
 
 ## Installation
 
-From crates.io:
-
-```sh
-cargo install tpt-l-sandbox-cli
-```
-
-From a checkout of this repository:
+From a checkout:
 
 ```sh
 cargo install --path crates/tpt-l-sandbox-cli
 ```
+
+Or with the install script, which downloads a release binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TPT-Solutions/tpt-linux-sandbox/master/install.sh | sh
+```
+
+Publication to crates.io is still pending.
 
 ## Usage
 
@@ -54,15 +61,35 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 
 | Option | Meaning |
 |---|---|
+| `--profile <NAME>` | Start from a built-in profile. Other flags extend it. |
+| `--policy <FILE>` | Load a policy file (same schema as profiles). |
+| `--from-apparmor <FILE>` | Import the file rules of an AppArmor profile. |
 | `--allow-read <PATH>` | Permit reads under `PATH`. Repeatable. |
 | `--allow-write <PATH>` | Permit reads and writes under `PATH`. Repeatable. |
+| `--allow-exec <PATH>` | Permit executing files under `PATH`. Repeatable. |
+| `--no-system-paths` | Do not grant the standard system directories. |
 | `--no-network` | Run in a network namespace with no external access. |
-| `--memory-limit <BYTES>` | Memory limit for the cgroup. |
+| `--memory-limit <BYTES>` | Memory limit (must be greater than 0). |
 | `--cpu-quota <PERCENT>` | CPU limit as a percentage of one core (1–100). |
+| `--pids-limit <N>` | Maximum number of processes and threads. |
 | `--new-root <PATH>` | Use `PATH` as the new root filesystem. |
+| `--cwd <PATH>` | Working directory for the command (default `/`). |
 | `--drop-caps` | Drop all capabilities before running the command. |
+| `--seccomp <MODE>` | `enforce` (default), `log` (log only) or `off`. |
+| `--pass-env <NAME>` | Pass this environment variable through. Repeatable. |
+| `--json` | Print a JSON exit event to stderr. |
+| `--dry-run`, `--explain` | Print the effective policy and exit without running. |
+| `--learn` | Run the command unsandboxed under `strace` and print a draft policy. |
+| `--doctor` | Check whether this machine can run the sandbox. |
+| `--print-profile <NAME>` | Print a built-in profile's TOML and exit. |
 | `-h`, `--help` | Show help. |
 | `-V`, `--version` | Show the version. |
+
+Built-in profiles: `strict`, `build`, `network-client`, `maintainer-script`,
+`untrusted-python`, `untrusted-node`.
+
+Policy values are combined in this order: profile, policy file, AppArmor
+profile, then flags. Lists are extended. Flags override scalar values.
 
 Examples:
 
@@ -70,46 +97,56 @@ Examples:
 # Read /etc only; run cat on the hostname.
 tpt-sandbox --allow-read /etc -- cat /etc/hostname
 
-# Limit memory to 128 MiB and CPU to half a core, with no network.
-tpt-sandbox --no-network --memory-limit 134217728 --cpu-quota 50 \
-    --allow-read /usr --allow-read /etc -- ./worker
+# A profile, with a larger memory limit.
+tpt-sandbox --profile build --memory-limit 2147483648 -- make
+
+# Show the policy without running anything.
+tpt-sandbox --profile strict --allow-read /srv/data --dry-run -- ./worker
 ```
 
-Errors are printed to stderr and the process exits with a non-zero status.
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| the command's code | the command ran and exited |
+| 128 + N | the command was killed by signal N |
+| 1 | the CLI failed (bad flags or policy) |
+| 126 | the sandbox could not be set up; nothing ran |
+| 127 | the command could not be executed |
+
+With `--json`, a line like `{"event":"exit","exit_code":3,"signal":null,"reason":null}`
+is printed to stderr.
 
 ## Behaviour and limitations
 
-- **Syscall filtering is log-only in this release.** The CLI installs a seccomp
-  policy whose default action is `Log`. Syscalls that would be denied are logged
-  and allowed to proceed, so the CLI does not block them. Do not rely on
-  `tpt-sandbox` to restrict system calls. Use `tpt-l-sandbox` directly with a
-  stricter `SeccompPolicy` if you need enforcement.
+- **Seccomp is enforced by default** with a general-purpose allowlist
+  (`SeccompPolicy::base_profile`). Calls outside it return `EPERM`. Use
+  `--seccomp log` to see what would be blocked. Syscalls such as `ptrace` are
+  not in the allowlist.
 - **Filesystem restrictions use Landlock.** Paths you do not allow are denied
-  for the program and its children. Paths must exist when the command starts.
-- **No allow-list for execution.** There is no `--allow-exec` flag. The command
-  is executed through the process that was restricted, so Landlock's read
-  rules must cover the binary and any shared libraries it loads.
+  for the command and its children. Landlock grants whole directory trees.
+- **Resource limits need cgroup delegation.** Without it the limit flags fail
+  with a clear error; `--doctor` reports which controllers are missing.
+- **The command is restricted, not the CLI.** The CLI forks first, the child
+  applies the sandbox and `exec`s the command, and the parent waits, removes the
+  child's cgroup, and reports the exit.
+- **The PID namespace is not used.** The command can see host process IDs
+  through `/proc`.
 - **Network isolation is all-or-nothing.** `--no-network` gives the command a
   network namespace with no external connectivity; there is no per-host policy.
-- **Exec replaces the CLI process.** After the sandbox is applied, the CLI calls
-  `exec(2)`. A failed `exec` is reported as an error.
+- **`--learn` runs the command without a sandbox** to record what it opens.
+  Review the draft policy before using it.
 
 ## Testing
-
-Unit tests and integration tests for the binary run with:
 
 ```sh
 cargo test -p tpt-l-sandbox-cli
 ```
 
-The integration tests in `tests/integration.rs` run the built binary and expect
-Linux. They are the end-to-end checks for the layers in this workspace.
-
-Known environment issue: the test `cli_allow_read_etc_hostname_succeeds` fails
-on WSL2, where writing the user-namespace UID map is not permitted. The other
-integration tests can pass there for the wrong reason, because they expect the
-command to fail and the sandbox setup fails first. Run the suite on a native
-Linux host with unprivileged user namespaces enabled before relying on it.
+The integration tests in `tests/integration.rs` run the built binary and need
+Linux with user namespaces. Negative tests check that the command was blocked
+and that the sandbox was set up, so a setup failure cannot pass as a block. The
+memory-limit test is skipped when the memory controller is not delegated.
 
 ## Minimum supported Rust version
 

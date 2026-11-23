@@ -1,0 +1,29 @@
+name: Release
+
+# Publishes static Linux binaries when a version tag (v0.1.0, ...) is pushed.
+# Crates are not published here; see the README for the crates.io steps.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Binary (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      # Produces tpt-sandbox-<target>.tar.gz containing tpt-sandbox-<target>/tpt-sandbox,
+      # the name cargo-binstall and install.sh expect.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: tpt-sandbox
+          target: ${{ matrix.target }}
+          archive: tpt-sandbox-$target
+          token: ${{ secrets.GITHUB_TOKEN }}

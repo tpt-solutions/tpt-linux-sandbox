@@ -1,0 +1,28 @@
+# Run a test suite inside the sandbox on GitHub Actions.
+# Copy to .github/workflows/ and adjust the command and profile.
+name: Sandboxed tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Option A: the composite action (installs the release binary).
+      - name: Run tests in the sandbox
+        uses: TPT-Solutions/tpt-linux-sandbox@master
+        with:
+          profile: build
+          command: cargo test --workspace
+
+      # Option B: install with cargo-binstall and call the CLI directly.
+      # - uses: cargo-bins/cargo-binstall@main
+      # - run: cargo binstall -y tpt-l-sandbox-cli
+      # - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # - run: tpt-sandbox --profile build -- cargo test --workspace

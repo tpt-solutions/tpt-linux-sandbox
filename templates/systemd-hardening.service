@@ -1,0 +1,31 @@
+# Example: run a long-lived service through tpt-sandbox.
+# Install as /etc/systemd/system/my-worker.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now my-worker
+#
+# systemd's own hardening is applied on top of the sandbox. Both layers are
+# independent; keep whichever apply to your service.
+[Unit]
+Description=My worker (sandboxed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Delegate lets tpt-sandbox create child cgroups for --memory-limit and
+# --pids-limit. Without it the limit flags fail with a permission error.
+Delegate=yes
+User=worker
+ExecStart=/usr/local/bin/tpt-sandbox --profile network-client --memory-limit 536870912 --pids-limit 128 -- /opt/my-worker/bin/worker
+Restart=on-failure
+RestartSec=5
+
+# systemd hardening (independent of tpt-sandbox)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
