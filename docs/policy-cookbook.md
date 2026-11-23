@@ -19,7 +19,7 @@ pids_limit = 32
 tpt-sandbox --policy untrusted.toml -- python3 untrusted.py
 ```
 
-Or use the built-in profile: `tpt-sandbox --profile untrusted-python -- python3 untrusted.py`.
+Or use the built-in profile: `tpt-sandbox --profile untrusted-python --allow-read . -- python3 untrusted.py`. The command starts in the current directory; `--allow-read .` lets it read the script.
 
 ## Sandbox a build in the project directory
 
@@ -81,7 +81,7 @@ The `maintainer-script` profile is the default for package maintainer scripts
 `/etc`. It has no network access and no capabilities:
 
 ```sh
-tpt-sandbox --profile maintainer-script -- sh ./postinst configure
+tpt-sandbox --profile maintainer-script --allow-read . -- sh ./postinst configure
 ```
 
 ## Find what a command needs

@@ -114,7 +114,8 @@ tpt-sandbox --profile strict --allow-read /srv/data --dry-run -- ./worker
 |---|---|
 | the command's code | the command ran and exited |
 | 128 + N | the command was killed by signal N |
-| 1 | the CLI failed (bad flags or policy) |
+| 1 | the CLI failed (policy error, setup failure, or `--doctor` found a warning) |
+| 2 | bad command-line flags (usage error from the argument parser) |
 | 126 | the sandbox could not be set up; nothing ran |
 | 127 | the command could not be executed |
 

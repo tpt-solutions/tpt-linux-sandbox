@@ -36,7 +36,7 @@ Other options: `cargo binstall tpt-l-sandbox-cli`, or `cargo install --path crat
 tpt-sandbox --allow-read /etc -- cat /etc/hostname
 
 # A built-in profile: no network, no capabilities, syscall allowlist
-tpt-sandbox --profile untrusted-python -- python3 script.py
+tpt-sandbox --profile untrusted-python --allow-read . -- python3 script.py
 
 # See the effective policy without running anything
 tpt-sandbox --profile build --dry-run

@@ -37,7 +37,7 @@ to [troubleshooting](troubleshooting.md).
 tpt-sandbox --allow-read /etc -- cat /etc/hostname
 
 # Use a built-in profile: no network, no capabilities, syscall allowlist.
-tpt-sandbox --profile untrusted-python -- python3 script.py
+tpt-sandbox --profile untrusted-python --allow-read . -- python3 script.py
 
 # Add limits on top of a profile.
 tpt-sandbox --profile build --memory-limit 2147483648 --pids-limit 512 -- make
@@ -83,9 +83,16 @@ use it. It records only what that one run touched.
 |---|---|
 | the command's own code | the command ran and exited normally |
 | 128 + N | the command was killed by signal N |
-| 1 | the CLI itself failed (bad flags, policy error) |
+| 1 | the CLI itself failed (policy error, setup failure, or `--doctor` found a warning) |
+| 2 | bad command-line flags (usage error from the argument parser) |
 | 126 | the sandbox could not be set up; nothing ran |
 | 127 | the command could not be executed |
 
 With `--json`, the CLI also prints one JSON line to stderr at exit, for example
 `{"event":"exit","exit_code":137,"signal":9,"reason":"killed with SIGKILL; ..."}`.
+
+## Next steps
+
+See [recipes](recipes/README.md) for copy-paste commands for Python, Cargo,
+C builds, untrusted scripts and CI. Check a policy file before using it with
+`tpt-sandbox --check-policy FILE`.
