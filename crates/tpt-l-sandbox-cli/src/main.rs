@@ -18,6 +18,7 @@ use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{Context as _, bail};
 use clap::{ArgAction, Parser};
@@ -27,8 +28,17 @@ use tpt_l_sandbox::{
     SeccompPolicy,
 };
 
+const SIGINT: i32 = 2;
+const SIGHUP: i32 = 1;
+const SIGTERM: i32 = 15;
 const SIGKILL: i32 = 9;
 const SIGSYS: i32 = 31;
+
+/// Signals the supervisor and relay pass on to the command.
+const FORWARDED_SIGNALS: [i32; 3] = [SIGHUP, SIGINT, SIGTERM];
+
+/// Process that received signals are forwarded to; 0 means none.
+static FORWARD_TO: AtomicI32 = AtomicI32::new(0);
 
 /// Standard system directories granted read and exec when `system_paths` is on.
 /// Entries that do not exist on this system are skipped.
@@ -72,8 +82,8 @@ struct Args {
     #[arg(long)]
     no_network: bool,
 
-    /// Memory limit in bytes (must be greater than 0).
-    #[arg(long, value_name = "BYTES")]
+    /// Memory limit: bytes, or with a K, M or G suffix (powers of 1024), e.g. 512M.
+    #[arg(long, value_name = "SIZE", value_parser = parse_size)]
     memory_limit: Option<u64>,
 
     /// CPU quota as a percentage of one core (1–100).
@@ -88,7 +98,7 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     new_root: Option<PathBuf>,
 
-    /// Working directory for the command (default /).
+    /// Working directory for the command (default: the current directory, or `/` with --new-root).
     #[arg(long, value_name = "PATH")]
     cwd: Option<PathBuf>,
 
@@ -141,6 +151,11 @@ struct Args {
     #[arg(long, value_name = "NAME")]
     print_profile: Option<String>,
 
+    /// Check a policy file without running anything: parse it, validate its
+    /// values and confirm its paths exist. Exits 0 when it is usable.
+    #[arg(long, value_name = "FILE")]
+    check_policy: Option<PathBuf>,
+
     /// The command to run, followed by its arguments.
     #[arg(trailing_var_arg = true, value_name = "COMMAND")]
     command: Vec<String>,
@@ -169,9 +184,20 @@ fn run(args: &Args) -> anyhow::Result<u8> {
         return Ok(0);
     }
 
-    if args.doctor {
-        tools::doctor();
+    if let Some(path) = &args.check_policy {
+        let mut policy = Policy::from_file(path)?;
+        let base = std::env::current_dir().context("cannot read current directory")?;
+        policy.resolve_paths(&base);
+        policy.validate()?;
+        build_sandbox(&policy)
+            .validate()
+            .context("policy check failed")?;
+        println!("{}: ok", path.display());
         return Ok(0);
+    }
+
+    if args.doctor {
+        return Ok(tools::doctor());
     }
 
     if args.learn {
@@ -185,6 +211,9 @@ fn run(args: &Args) -> anyhow::Result<u8> {
     policy.validate()?;
 
     if args.dry_run {
+        build_sandbox(&policy)
+            .validate()
+            .context("policy validation failed")?;
         tools::explain(&policy, &args.command);
         return Ok(0);
     }
@@ -250,10 +279,8 @@ fn build_sandbox(policy: &Policy) -> Sandbox {
     }
     let mut sandbox = Sandbox::new().namespaces(ns);
 
-    if let Some(cg) = build_cgroup(policy) {
-        sandbox = sandbox.cgroup(cg);
-    }
-
+    // The cgroup is created by `supervise`, not by the sandbox stages, so the
+    // process that removes it is the one that created it.
     if let Some(root) = &policy.new_root {
         sandbox = sandbox.jail(JailConfig::new(root).mount_proc().mount_dev_minimal());
     }
@@ -298,6 +325,23 @@ fn build_sandbox(policy: &Policy) -> Sandbox {
     sandbox.landlock(ruleset)
 }
 
+/// Parse a byte count: digits, optionally followed by K, M or G (powers of
+/// 1024, either case). Rejects anything else, including overflow.
+fn parse_size(text: &str) -> Result<u64, String> {
+    let (digits, multiplier) = match text.chars().last() {
+        Some('k' | 'K') => (&text[..text.len() - 1], 1u64 << 10),
+        Some('m' | 'M') => (&text[..text.len() - 1], 1u64 << 20),
+        Some('g' | 'G') => (&text[..text.len() - 1], 1u64 << 30),
+        _ => (text, 1),
+    };
+    let value: u64 = digits
+        .parse()
+        .map_err(|_| format!("invalid size {text:?}; use bytes or a K, M or G suffix"))?;
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("size {text:?} is too large"))
+}
+
 /// cgroup limits for the child, named after this (the supervising) process.
 fn build_cgroup(policy: &Policy) -> Option<CgroupConfig> {
     if policy.memory_limit.is_none() && policy.cpu_quota.is_none() && policy.pids_limit.is_none() {
@@ -321,6 +365,16 @@ fn supervise(policy: &Policy, command: &[String], json: bool) -> anyhow::Result<
     let sandbox = build_sandbox(policy);
     sandbox.validate().context("policy validation failed")?;
     let cgroup = build_cgroup(policy);
+    if let Some(cg) = &cgroup {
+        // Create the group before forking, so this process knows where it is
+        // and can remove it. The child only joins it.
+        cg.apply().context("sandbox setup failed: cgroup")?;
+    }
+    for name in &policy.pass_env {
+        if std::env::var_os(name).is_none() {
+            eprintln!("tpt-sandbox: warning: --pass-env {name} is not set; it will not be passed");
+        }
+    }
 
     // SAFETY: called before this process starts any threads, so the child is
     // single-threaded and may safely run the setup code below.
@@ -329,25 +383,84 @@ fn supervise(policy: &Policy, command: &[String], json: bool) -> anyhow::Result<
         return Err(io::Error::last_os_error()).context("fork failed");
     }
     if pid == 0 {
-        child_main(policy, &sandbox, command);
+        child_main(policy, &sandbox, cgroup.as_ref(), command);
     }
+    // The command runs in its own session, so a terminal Ctrl-C would not
+    // reach it. Forward the signals we receive instead.
+    install_forwarding(pid);
 
-    let status = wait_child(pid).context("waiting for the sandboxed command failed")?;
+    let status = wait_child(pid);
     if let Some(cg) = &cgroup {
         // The child has exited, so the cgroup is empty and can be removed.
-        // Ignore failures: the directory may never have been created.
+        // Ignore failures: the directory may never have been created. This runs
+        // before the error check below so a failed wait does not leak it.
         let _ = cg.destroy();
     }
-    Ok(report_exit(status, json))
+    Ok(report_exit(
+        status.context("waiting for the sandboxed command failed")?,
+        json,
+    ))
+}
+
+/// Forward `sig` to the process in `FORWARD_TO`. Runs in signal context, so it
+/// only does async-signal-safe work.
+extern "C" fn forward_signal(sig: libc::c_int) {
+    let pid = FORWARD_TO.load(Ordering::Relaxed);
+    if pid > 0 {
+        // SAFETY: kill is async-signal-safe and takes plain integers.
+        unsafe { libc::kill(pid, sig) };
+    }
+}
+
+/// Forward SIGHUP, SIGINT and SIGTERM to `pid`. Only the supervisor calls
+/// this: the sandboxed relay cannot call kill(2), which the seccomp allowlist
+/// does not include.
+fn install_forwarding(pid: libc::pid_t) {
+    FORWARD_TO.store(pid, Ordering::Relaxed);
+    let handler: extern "C" fn(libc::c_int) = forward_signal;
+    for sig in FORWARDED_SIGNALS {
+        // SAFETY: the handler is an extern "C" fn that only calls kill.
+        unsafe { libc::signal(sig, handler as libc::sighandler_t) };
+    }
+}
+
+/// Restore default dispositions. Called in the forked child, so the inherited
+/// handler cannot forward to the wrong process.
+fn reset_signal_handlers() {
+    for sig in FORWARDED_SIGNALS {
+        // SAFETY: SIG_DFL is always a valid disposition.
+        unsafe { libc::signal(sig, libc::SIG_DFL) };
+    }
+}
+
+/// Kill this process when its parent exits, so a dead supervisor does not
+/// leave the sandboxed command running.
+fn kill_on_parent_exit() {
+    // SAFETY: prctl with PR_SET_PDEATHSIG takes a plain integer argument.
+    unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::c_ulong::from(SIGKILL as u32)) };
 }
 
 /// Runs in the forked child. Never returns.
-fn child_main(policy: &Policy, sandbox: &Sandbox, command: &[String]) -> ! {
+fn child_main(
+    policy: &Policy,
+    sandbox: &Sandbox,
+    cgroup: Option<&CgroupConfig>,
+    command: &[String],
+) -> ! {
+    kill_on_parent_exit();
+    reset_signal_handlers();
     // Detach from the controlling terminal so keystrokes cannot be injected
     // into it (TIOCSTI).
     // SAFETY: setsid has no memory-safety preconditions.
     unsafe { libc::setsid() };
     close_inherited_fds();
+
+    // Join the cgroup the supervisor created, before any restriction applies.
+    if let Some(cg) = cgroup {
+        if let Err(e) = cg.enter() {
+            child_fail(126, &format!("sandbox setup failed: cgroup: {e}"));
+        }
+    }
 
     if let Err(e) = sandbox.clone().apply() {
         child_fail(126, &format!("sandbox setup failed: {e}"));
@@ -362,8 +475,12 @@ fn child_main(policy: &Policy, sandbox: &Sandbox, command: &[String]) -> ! {
             child_fail(126, "cannot fork into the PID namespace");
         }
         if pid > 0 {
+            // No forwarding here: the relay cannot send signals. If it is
+            // signalled, it dies, and the command (PID 1 of the namespace) gets
+            // SIGKILL from kill_on_parent_exit below, which ends the namespace.
             relay_command_status(pid);
         }
+        kill_on_parent_exit();
     }
 
     let cwd = policy.cwd.clone().unwrap_or_else(|| PathBuf::from("/"));
@@ -430,8 +547,16 @@ fn close_inherited_fds() {
         )
     };
     if ret != 0 {
-        // Kernels without close_range: close the usual range one by one.
-        for fd in 3..4096 {
+        // Kernels without close_range: close every descriptor up to the
+        // open-file limit, so none above a fixed bound survives.
+        // SAFETY: sysconf takes a plain integer and has no side effects.
+        let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+        let end = if limit > 3 {
+            i32::try_from(limit).unwrap_or(i32::MAX)
+        } else {
+            4096
+        };
+        for fd in 3..end {
             // SAFETY: closing an arbitrary descriptor number is always memory-safe.
             unsafe { libc::close(fd) };
         }
@@ -487,4 +612,26 @@ fn report_exit(status: libc::c_int, json: bool) -> u8 {
     }
 
     u8::try_from(code.clamp(0, 255)).unwrap_or(1)
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::parse_size;
+
+    #[test]
+    fn plain_bytes_and_suffixes() {
+        assert_eq!(parse_size("4096"), Ok(4096));
+        assert_eq!(parse_size("512k"), Ok(512 << 10));
+        assert_eq!(parse_size("512M"), Ok(512 << 20));
+        assert_eq!(parse_size("2G"), Ok(2 << 30));
+    }
+
+    #[test]
+    fn rejects_bad_and_overflowing_sizes() {
+        assert!(parse_size("").is_err());
+        assert!(parse_size("M").is_err());
+        assert!(parse_size("12x").is_err());
+        assert!(parse_size("-1").is_err());
+        assert!(parse_size("99999999999999999999G").is_err());
+    }
 }

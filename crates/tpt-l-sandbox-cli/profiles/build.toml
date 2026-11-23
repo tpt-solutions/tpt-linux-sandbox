@@ -1,7 +1,9 @@
 # Build tools: toolchain read access, current directory writable, network on
-# (dependency fetches). Run from the project root.
+# (dependency fetches). Run from the project root. /tmp is writable because
+# compilers and package managers use it; it is shared with other users, so
+# keep secrets out of it.
 allow_read = ["/etc", "/usr/share", "/usr/include", "/usr/lib"]
-allow_write = ["."]
+allow_write = [".", "/tmp"]
 seccomp = "enforce"
 # Resource limits are not set here: they need cgroup delegation. Add
 # --memory-limit / --pids-limit, or set memory_limit / pids_limit in a policy file.

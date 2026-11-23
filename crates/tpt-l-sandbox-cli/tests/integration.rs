@@ -153,6 +153,13 @@ fn cli_drop_caps_blocks_mount() {
     );
 }
 
+/// The calling process's cgroup directory (cgroup v2 only), from /proc.
+fn own_cgroup_dir() -> Option<std::path::PathBuf> {
+    let text = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let rel = text.lines().find_map(|l| l.strip_prefix("0::"))?;
+    Some(std::path::Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/')))
+}
+
 /// The memory controller must be enabled for the parent cgroup (delegation).
 /// Without it the sandbox cannot set a limit, so the test is skipped.
 /// True when the memory limit can actually be applied: the controller is
@@ -161,12 +168,22 @@ fn cli_drop_caps_blocks_mount() {
 /// on an unprivileged runner the controller is listed but cgroup creation
 /// fails with EACCES.
 fn memory_controller_delegated() -> bool {
-    let delegated = std::fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+    // The CLI works under the caller's own cgroup, so probe there. Enabling the
+    // controller in a cgroup that also holds other processes is impossible
+    // without moving them (cgroup v2 rule), so an unprivileged test only runs
+    // when the controller is already enabled there. Root may use the cgroupfs
+    // root instead.
+    let Some(own) = own_cgroup_dir() else {
+        return false;
+    };
+    // SAFETY: geteuid has no preconditions.
+    let is_root = unsafe { libc::geteuid() } == 0;
+    let enabled = std::fs::read_to_string(own.join("cgroup.subtree_control"))
         .is_ok_and(|s| s.split_whitespace().any(|c| c == "memory"));
-    if !delegated {
+    if !(enabled || is_root) {
         return false;
     }
-    let probe = format!("/sys/fs/cgroup/tpt-test-probe-{}", std::process::id());
+    let probe = own.join(format!("tpt-test-probe-{}", std::process::id()));
     match std::fs::create_dir(&probe) {
         Ok(()) => {
             let _ = std::fs::remove_dir(&probe);
@@ -358,6 +375,98 @@ fn cli_tcp_allowlist_denies_other_ports() {
     assert!(
         stderr(&out).contains("Permission denied"),
         "expected EACCES from Landlock, stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cli_command_starts_in_invoking_directory() {
+    // The default working directory is the caller's, not `/`. `.` is granted so
+    // the directory is readable; `pwd` prints where the command started.
+    let out = run_cli(&["--allow-read", ".", "--", "pwd"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(!setup_failed(&out));
+
+    let expected = std::env::current_dir().expect("current dir");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        expected.to_string_lossy()
+    );
+}
+
+#[test]
+fn cli_warns_about_unset_pass_env_name() {
+    let out = run_cli(&["--pass-env", "TPT_TEST_NOT_SET_ANYWHERE", "--", "true"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--pass-env TPT_TEST_NOT_SET_ANYWHERE is not set"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cli_forwards_sigterm_to_the_command() {
+    // The command sleeps for 30 s. A SIGTERM to the CLI must reach it, so the
+    // CLI exits well before the sleep would finish. The default PID namespace
+    // is in use, so this also covers the relay path.
+    let mut child = Command::new(cli_binary())
+        .args(["--", "sleep", "30"])
+        .spawn()
+        .expect("failed to spawn CLI");
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    // SAFETY: kill takes plain integers; the pid is our own child.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+
+    let start = std::time::Instant::now();
+    let status = child.wait().expect("wait for CLI");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "CLI did not stop after SIGTERM"
+    );
+    assert!(!status.success(), "a signalled run must not report success");
+}
+
+/// Write a policy file under the temp directory and return its path.
+fn write_policy(name: &str, text: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("tpt-sandbox-{name}-{}.toml", std::process::id()));
+    std::fs::write(&path, text).expect("write policy");
+    path
+}
+
+#[test]
+fn cli_check_policy_accepts_a_usable_policy() {
+    let path = write_policy("check-ok", "allow_read = [\"/etc\"]\nno_network = true\n");
+    let out = run_cli(&["--check-policy", &path.to_string_lossy()]);
+    let _ = std::fs::remove_file(&path);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(String::from_utf8_lossy(&out.stdout).contains(": ok"));
+}
+
+#[test]
+fn cli_check_policy_rejects_a_missing_path() {
+    let path = write_policy(
+        "check-missing",
+        "allow_write = [\"/nonexistent-tpt-sandbox-path\"]\n",
+    );
+    let out = run_cli(&["--check-policy", &path.to_string_lossy()]);
+    let _ = std::fs::remove_file(&path);
+    assert!(!out.status.success(), "a missing path must fail the check");
+    assert!(stderr(&out).contains("nonexistent-tpt-sandbox-path"));
+}
+
+#[test]
+fn cli_new_root_without_system_directories_explains_itself() {
+    // An empty new root has no /usr, which the default system paths need.
+    let root = std::env::temp_dir().join(format!("tpt-sandbox-empty-root-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("create empty root");
+    let root_str = root.to_string_lossy().into_owned();
+    let out = run_cli(&["--dry-run", "--new-root", &root_str, "--", "true"]);
+    let _ = std::fs::remove_dir(&root);
+    assert!(!out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("does not exist inside the new root"),
+        "stderr: {}",
         stderr(&out)
     );
 }

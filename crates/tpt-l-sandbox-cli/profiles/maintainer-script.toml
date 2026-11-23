@@ -1,4 +1,4 @@
-# Package maintainer scripts (tpt-deb-toolkit): the default for spec section 5.
+# Debian package maintainer scripts (postinst, prerm and similar).
 # Reads the system, writes only the package database, no network, no caps.
 allow_read = ["/etc", "/usr", "/var/lib/dpkg"]
 allow_write = ["/var/lib/dpkg", "/etc"]

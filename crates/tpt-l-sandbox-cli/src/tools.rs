@@ -11,9 +11,14 @@ use crate::policy::Policy;
 
 /// Print a report on whether this machine can run the sandbox, and what will
 /// degrade if it cannot.
-pub fn doctor() {
+///
+/// Returns the exit code: 1 if any check is a warning, so the report can gate
+/// a script. Informational lines do not fail.
+pub fn doctor() -> u8 {
+    let kernel = read_trim("/proc/sys/kernel/osrelease").unwrap_or_default();
     let checks = [
         check_kernel(),
+        check_landlock_features(&kernel),
         check_wsl(),
         check_userns(),
         check_apparmor_userns(),
@@ -21,9 +26,61 @@ pub fn doctor() {
         check_seccomp(),
         check_cgroup(),
         check_selinux(),
+        check_strace(),
     ];
+    let mut code = 0;
     for (level, name, detail) in checks {
+        if level == "warn" {
+            code = 1;
+        }
         println!("[{level}] {name}: {detail}");
+    }
+    code
+}
+
+/// Whether the `strace` binary used by `--learn` can run.
+fn check_strace() -> Check {
+    match Command::new("strace").arg("-V").output() {
+        Ok(out) if out.status.success() => ("ok", "strace", "found (used by --learn)".into()),
+        _ => ("info", "strace", "not found; --learn needs it".into()),
+    }
+}
+
+/// Landlock features the CLI uses, by the kernel release that added them.
+/// Matches the ABI table in docs/kernel-matrix.md.
+fn check_landlock_features(release: &str) -> Check {
+    let mut parts = release.split(|c: char| !c.is_ascii_digit());
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let at_least = |maj: u32, min: u32| (major, minor) >= (maj, min);
+    if release.is_empty() {
+        return ("warn", "landlock features", "kernel release unknown".into());
+    }
+    let mut missing = Vec::new();
+    if !at_least(5, 19) {
+        missing.push("Refer (5.19)");
+    }
+    if !at_least(6, 2) {
+        missing.push("Truncate (6.2)");
+    }
+    if !at_least(6, 7) {
+        missing.push("TCP port rules (6.7)");
+    }
+    if !at_least(6, 12) {
+        missing.push("IPC scoping (6.12)");
+    }
+    if missing.is_empty() {
+        (
+            "ok",
+            "landlock features",
+            "all used features available".into(),
+        )
+    } else {
+        (
+            "info",
+            "landlock features",
+            format!("not available on {release}: {}", missing.join(", ")),
+        )
     }
 }
 
@@ -53,11 +110,11 @@ fn check_kernel() -> Check {
             "kernel",
             format!("{release}; Landlock needs 5.13 or newer"),
         )
-    } else if (major, minor) < (6, 2) {
+    } else if (major, minor) < (6, 12) {
         (
             "info",
             "kernel",
-            format!("{release}; Landlock works, but Refer/Truncate need 6.2+"),
+            format!("{release}; Landlock works; some features are missing (see landlock features)"),
         )
     } else {
         ("ok", "kernel", release)
@@ -133,45 +190,64 @@ fn check_seccomp() -> Check {
     }
 }
 
+/// The calling process's cgroup directory, from `/proc/self/cgroup`. The
+/// sandbox creates its cgroup here, so this is what the check must test.
+fn own_cgroup_dir() -> std::path::PathBuf {
+    let rel = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|l| l.strip_prefix("0::").map(str::to_owned))
+        })
+        .unwrap_or_else(|| "/".into());
+    Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'))
+}
+
 fn check_cgroup() -> Check {
-    let root = Path::new("/sys/fs/cgroup");
-    if !root.join("cgroup.controllers").exists() {
+    let own = own_cgroup_dir();
+    let location = own.display().to_string();
+    if !own.join("cgroup.controllers").exists() {
         return (
             "info",
             "cgroup v2",
             "not mounted; --memory-limit and --cpu-quota will fail".into(),
         );
     }
-    let enabled: Vec<String> = read_trim("/sys/fs/cgroup/cgroup.subtree_control")
+    // The controllers this process's cgroup offers. The sandbox enables them
+    // there (moving the process into a leaf first if needed), so they must be
+    // offered, not already enabled.
+    let offered: Vec<String> = read_trim(&format!("{location}/cgroup.controllers"))
         .unwrap_or_default()
         .split_whitespace()
         .map(str::to_owned)
         .collect();
     let missing: Vec<&str> = ["cpu", "memory", "pids"]
         .into_iter()
-        .filter(|c| !enabled.iter().any(|e| e.as_str() == *c))
+        .filter(|c| !offered.iter().any(|e| e.as_str() == *c))
         .collect();
     if !missing.is_empty() {
         return (
             "warn",
             "cgroup v2",
             format!(
-                "controllers not delegated to the root cgroup: {}; --cpu-quota, --memory-limit and --pids-limit will fail",
+                "controllers not available to {location}: {}; --cpu-quota, --memory-limit and --pids-limit will fail",
                 missing.join(", ")
             ),
         );
     }
-    if access_writable(root) {
+    if access_writable(&own) {
         (
             "ok",
             "cgroup v2",
-            "writable; resource limits available".into(),
+            format!("writable at {location}; resource limits available"),
         )
     } else {
         (
             "warn",
             "cgroup v2",
-            "not writable by this user; limits need systemd delegation (Delegate=yes)".into(),
+            format!(
+                "{location} is not writable by this user; limits need systemd delegation (Delegate=yes)"
+            ),
         )
     }
 }
@@ -219,7 +295,7 @@ pub fn explain(policy: &Policy, command: &[String]) {
     println!(
         "  ipc        : {}",
         if policy.isolate_ipc() {
-            "abstract sockets and signals isolated"
+            "requested: abstract sockets and signals isolated (needs kernel 6.12+; best-effort)"
         } else {
             "shared with host"
         }
@@ -307,7 +383,13 @@ pub fn learn(command: &[String]) -> Result<u8> {
     let (program, args) = command
         .split_first()
         .context("--learn needs a command after --")?;
-    let log = std::env::temp_dir().join(format!("tpt-sandbox-learn-{}.log", std::process::id()));
+    // A private directory for the log. `create_dir` fails if the path exists,
+    // including as a symlink, so a file planted in the shared temp directory
+    // cannot redirect strace's output.
+    let dir = std::env::temp_dir().join(format!("tpt-sandbox-learn-{}", std::process::id()));
+    std::fs::create_dir(&dir)
+        .with_context(|| format!("cannot create private log directory {}", dir.display()))?;
+    let log = dir.join("strace.log");
 
     let status = Command::new("strace")
         .args(["-f", "-q", "-e", "trace=file", "-o"])
@@ -315,14 +397,25 @@ pub fn learn(command: &[String]) -> Result<u8> {
         .arg("--")
         .arg(program)
         .args(args)
-        .status()
-        .context("failed to run strace; install it to use --learn")?;
+        .status();
+    let text = match &status {
+        Ok(_) => std::fs::read_to_string(&log)
+            .with_context(|| format!("strace produced no log at {}", log.display())),
+        Err(_) => Ok(String::new()),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    let status = status.context("failed to run strace; install it to use --learn")?;
+    let text = text?;
 
-    let text = std::fs::read_to_string(&log)
-        .with_context(|| format!("strace produced no log at {}", log.display()))?;
-    let _ = std::fs::remove_file(&log);
-
-    let paths: BTreeSet<String> = text.lines().filter_map(accessed_path).collect();
+    let mut reads = BTreeSet::new();
+    let mut writes = BTreeSet::new();
+    for (path, is_write) in text.lines().filter_map(accessed_path) {
+        if is_write {
+            writes.insert(path);
+        } else {
+            reads.insert(path);
+        }
+    }
 
     println!(
         "# Generated by tpt-sandbox --learn for: {}",
@@ -330,13 +423,19 @@ pub fn learn(command: &[String]) -> Result<u8> {
     );
     println!("# The command ran WITHOUT a sandbox. Review before use.");
     println!("allow_read = [");
-    for p in &paths {
+    for p in &reads {
+        println!("  {p:?},");
+    }
+    println!("]");
+    println!("allow_write = [");
+    for p in &writes {
         println!("  {p:?},");
     }
     println!("]");
     eprintln!(
-        "tpt-sandbox: observed {} successfully opened paths; the command ran unsandboxed",
-        paths.len()
+        "tpt-sandbox: observed {} read and {} write paths; the command ran unsandboxed",
+        reads.len(),
+        writes.len()
     );
 
     if !status.success() {
@@ -345,12 +444,11 @@ pub fn learn(command: &[String]) -> Result<u8> {
     Ok(0)
 }
 
-/// Extract a successfully opened absolute path from one strace line, skipping
-/// kernel pseudo-filesystems that are noise for policy purposes.
-fn accessed_path(line: &str) -> Option<String> {
-    let start = line.find('"')? + 1;
-    let end = start + line[start..].find('"')?;
-    let path = &line[start..end];
+/// Extract a successfully opened absolute path from one strace line, with
+/// whether it was opened for writing. Kernel pseudo-filesystems are skipped:
+/// they are noise for policy purposes.
+fn accessed_path(line: &str) -> Option<(String, bool)> {
+    let path = first_quoted(line)?;
     if !path.starts_with('/')
         || path.starts_with("/proc")
         || path.starts_with("/sys")
@@ -363,7 +461,29 @@ fn accessed_path(line: &str) -> Option<String> {
     if result.starts_with('-') {
         return None;
     }
-    Some(path.to_owned())
+    // Only open flags say whether a path is written. Other calls (stat,
+    // access, execve) are read-side for policy purposes.
+    let flags = line.find('"').map_or("", |start| &line[start..]);
+    let writes = ["O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC"]
+        .iter()
+        .any(|flag| flags.contains(flag));
+    Some((path, writes))
+}
+
+/// The first double-quoted string in an strace line, with `\"` and `\\`
+/// unescaped. strace escapes quotes and backslashes inside paths.
+fn first_quoted(line: &str) -> Option<String> {
+    let start = line.find('"')? + 1;
+    let mut out = String::new();
+    let mut chars = line[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            _ => out.push(c),
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -373,7 +493,31 @@ mod tests {
     #[test]
     fn strace_success_line_yields_path() {
         let line = r#"openat(AT_FDCWD, "/etc/hostname", O_RDONLY|O_CLOEXEC) = 3"#;
-        assert_eq!(accessed_path(line).as_deref(), Some("/etc/hostname"));
+        assert_eq!(
+            accessed_path(line),
+            Some(("/etc/hostname".to_owned(), false))
+        );
+    }
+
+    #[test]
+    fn strace_write_open_is_a_write() {
+        let line = r#"openat(AT_FDCWD, "/work/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 4"#;
+        assert_eq!(
+            accessed_path(line),
+            Some(("/work/out.txt".to_owned(), true))
+        );
+    }
+
+    #[test]
+    fn strace_stat_is_a_read() {
+        let line = r#"newfstatat(AT_FDCWD, "/work/x", {st_mode=S_IFREG}, 0) = 0"#;
+        assert_eq!(accessed_path(line), Some(("/work/x".to_owned(), false)));
+    }
+
+    #[test]
+    fn strace_escaped_quote_stays_in_path() {
+        let line = r#"openat(AT_FDCWD, "/tmp/a\"b", O_RDONLY) = 3"#;
+        assert_eq!(accessed_path(line), Some((r#"/tmp/a"b"#.to_owned(), false)));
     }
 
     #[test]

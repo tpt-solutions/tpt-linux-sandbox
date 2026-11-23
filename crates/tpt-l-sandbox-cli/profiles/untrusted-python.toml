@@ -1,4 +1,5 @@
-# Untrusted Python: read system libraries, no network, no caps, small limits.
+# Untrusted Python: read system libraries, no network, no caps.
+# Same baseline as untrusted-node; kept as a separate file so each can diverge.
 allow_read = ["/etc/localtime", "/usr/share/zoneinfo"]
 no_network = true
 drop_caps = true

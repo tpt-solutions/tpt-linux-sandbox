@@ -193,19 +193,27 @@ impl Policy {
     /// Reject values that would otherwise be silently changed later.
     pub fn validate(&self) -> Result<()> {
         if self.memory_limit == Some(0) {
-            bail!("--memory-limit must be greater than 0");
+            bail!(
+                "memory limit must be greater than 0 (--memory-limit or memory_limit in the policy file)"
+            );
         }
         if let Some(quota) = self.cpu_quota {
             if !(1..=100).contains(&quota) {
-                bail!("--cpu-quota must be between 1 and 100 (percent), got {quota}");
+                bail!(
+                    "CPU quota must be between 1 and 100 (percent), got {quota} (--cpu-quota or cpu_quota in the policy file)"
+                );
             }
         }
         if self.pids_limit == Some(0) {
-            bail!("--pids-limit must be greater than 0");
+            bail!(
+                "process limit must be greater than 0 (--pids-limit or pids_limit in the policy file)"
+            );
         }
         if let Some(mode) = &self.seccomp {
             if !matches!(mode.as_str(), "enforce" | "log" | "off") {
-                bail!("unknown seccomp mode {mode:?}; use enforce, log or off");
+                bail!(
+                    "unknown seccomp mode {mode:?}; use enforce, log or off (--seccomp or seccomp in the policy file)"
+                );
             }
         }
         Ok(())
@@ -230,6 +238,15 @@ impl Policy {
         if let Some(root) = &mut self.new_root {
             fix(root);
         }
+        // The command starts in the invoking directory unless `cwd` says
+        // otherwise. Inside a --new-root jail the host directory usually does
+        // not exist, so the jail's `/` is the default there.
+        let default_cwd = if self.new_root.is_some() {
+            PathBuf::from("/")
+        } else {
+            base.to_path_buf()
+        };
+        fix(self.cwd.get_or_insert(default_cwd));
     }
 }
 
