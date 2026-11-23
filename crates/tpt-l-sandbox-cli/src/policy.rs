@@ -19,6 +19,15 @@ pub const PRESET_NAMES: &[&str] = &[
     "untrusted-node",
 ];
 
+/// The policy file JSON Schema, embedded so `--print-schema` works offline.
+/// The copy lives in this crate so it ships in the published package; a test
+/// keeps it identical to `schemas/policy.schema.json` at the repository root.
+pub const SCHEMA_TEXT: &str = include_str!("../schema/policy.schema.json");
+
+/// Where editors can fetch the schema. Written as the first line of
+/// `--print-profile` output so Taplo and VS Code associate the file with it.
+pub const SCHEMA_URL: &str = "https://raw.githubusercontent.com/TPT-Solutions/tpt-linux-sandbox/master/schemas/policy.schema.json";
+
 /// The embedded TOML text for a built-in profile.
 pub fn preset_text(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -273,6 +282,19 @@ mod tests {
         for name in PRESET_NAMES {
             let p = Policy::from_preset(name).unwrap_or_else(|e| panic!("{name}: {e:#}"));
             p.validate().unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        }
+    }
+
+    #[test]
+    fn embedded_schema_matches_repository_copy() {
+        // Runs only in the repository checkout; the packaged crate has no
+        // `schemas/` directory above it.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/policy.schema.json");
+        if let Ok(text) = std::fs::read_to_string(&root) {
+            assert_eq!(
+                SCHEMA_TEXT, text,
+                "crates/tpt-l-sandbox-cli/schema/policy.schema.json is out of date; copy it from schemas/"
+            );
         }
     }
 

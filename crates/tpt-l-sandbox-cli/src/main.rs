@@ -154,9 +154,14 @@ struct Args {
     #[arg(long)]
     doctor: bool,
 
-    /// Print a built-in profile's TOML and exit.
+    /// Print a built-in profile's TOML and exit. The first line is a
+    /// `#:schema` header that editors use to find the policy schema.
     #[arg(long, value_name = "NAME")]
     print_profile: Option<String>,
+
+    /// Print the JSON Schema for policy files and exit.
+    #[arg(long)]
+    print_schema: bool,
 
     /// Check a policy file without running anything: parse it, validate its
     /// values and confirm its paths exist. Exits 0 when it is usable.
@@ -180,6 +185,11 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> anyhow::Result<u8> {
+    if args.print_schema {
+        print!("{}", policy::SCHEMA_TEXT);
+        return Ok(0);
+    }
+
     if let Some(name) = &args.print_profile {
         let text = policy::preset_text(name).with_context(|| {
             format!(
@@ -187,6 +197,7 @@ fn run(args: &Args) -> anyhow::Result<u8> {
                 policy::PRESET_NAMES.join(", ")
             )
         })?;
+        println!("#:schema {}", policy::SCHEMA_URL);
         print!("{text}");
         return Ok(0);
     }

@@ -292,6 +292,23 @@ fn cli_prints_builtin_profile() {
 }
 
 #[test]
+fn cli_profile_starts_with_schema_header() {
+    let out = run_cli(&["--print-profile", "strict"]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("#:schema https://"), "got: {text:.80}");
+}
+
+#[test]
+fn cli_print_schema_emits_json_schema() {
+    let out = run_cli(&["--print-schema"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.trim_start().starts_with('{'), "not JSON: {text:.80}");
+    assert!(text.contains("\"title\": \"tpt-sandbox policy\""));
+}
+
+#[test]
 fn cli_unknown_profile_fails() {
     let out = run_cli(&["--profile", "does-not-exist", "--", "true"]);
     assert!(!out.status.success());
