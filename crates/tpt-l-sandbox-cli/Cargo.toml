@@ -20,5 +20,28 @@ path = "src/main.rs"
 
 [dependencies]
 tpt-l-sandbox.workspace = true
+tpt-l-apparmor-parser.workspace = true
+tpt-l-selinux-context.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+libc.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+# `cargo binstall tpt-l-sandbox-cli` downloads a prebuilt binary from the
+# GitHub release created by .github/workflows/release.yml.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/tpt-sandbox-{ target }.tar.gz"
+bin-dir = "tpt-sandbox-{ target }/tpt-sandbox"
+pkg-fmt = "tgz"
+
+# `cargo deb` builds a Debian package. Profiles are installed as examples.
+[package.metadata.deb]
+name = "tpt-sandbox"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/tpt-sandbox", "usr/bin/", "755"],
+    ["profiles/*.toml", "usr/share/tpt-sandbox/profiles/", "644"],
+    ["README.md", "usr/share/doc/tpt-sandbox/", "644"],
+]

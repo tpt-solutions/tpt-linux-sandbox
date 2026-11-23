@@ -1,0 +1,6 @@
+# Outbound network client: TLS roots and name resolution, no writes.
+allow_read = ["/etc/ssl", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/host.conf", "/usr/share/ca-certificates"]
+drop_caps = true
+seccomp = "enforce"
+memory_limit = 536870912   # 512 MiB
+pids_limit = 128

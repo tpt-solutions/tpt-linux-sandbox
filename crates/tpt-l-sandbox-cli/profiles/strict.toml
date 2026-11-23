@@ -1,0 +1,7 @@
+# Strict: no network, no capabilities, enforced syscall allowlist.
+# Only system directories are readable. Add paths with --allow-read.
+no_network = true
+drop_caps = true
+seccomp = "enforce"
+memory_limit = 268435456   # 256 MiB
+pids_limit = 64

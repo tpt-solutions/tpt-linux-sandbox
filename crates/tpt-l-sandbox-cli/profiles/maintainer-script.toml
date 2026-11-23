@@ -1,0 +1,10 @@
+# Package maintainer scripts (tpt-deb-toolkit): the default for spec section 5.
+# Reads the system, writes only the package database, no network, no caps.
+allow_read = ["/etc", "/usr", "/var/lib/dpkg"]
+allow_write = ["/var/lib/dpkg", "/etc"]
+no_network = true
+drop_caps = true
+seccomp = "enforce"
+memory_limit = 536870912   # 512 MiB
+pids_limit = 64
+cwd = "/"

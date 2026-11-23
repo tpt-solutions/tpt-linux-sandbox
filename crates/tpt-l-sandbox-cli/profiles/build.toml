@@ -1,0 +1,7 @@
+# Build tools: toolchain read access, current directory writable, network on
+# (dependency fetches). Run from the project root.
+allow_read = ["/etc", "/usr/share", "/usr/include", "/usr/lib"]
+allow_write = ["."]
+seccomp = "enforce"
+memory_limit = 4294967296  # 4 GiB
+pids_limit = 1024
