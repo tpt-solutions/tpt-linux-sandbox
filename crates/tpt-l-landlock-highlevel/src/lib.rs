@@ -382,6 +382,102 @@ mod tests {
         assert!(v.tcp_bind.is_empty() && v.tcp_connect.is_empty() && !v.isolate_ipc);
     }
 
+    /// Linux 6.12+ scopes abstract sockets: a sandboxed child must not connect
+    /// to an abstract socket that the unrestricted parent listens on. Older
+    /// kernels drop the scope, so the test skips there.
+    #[test]
+    #[ignore = "needs Linux 6.12+ for scoped abstract sockets; run with --include-ignored"]
+    fn abstract_socket_outside_domain_is_refused_in_forked_child() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+
+        let name = format!("tpt-landlock-abstract-{}", std::process::id());
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).expect("abstract name");
+        // The parent keeps this listener; the child must not reach it.
+        let _listener = UnixListener::bind_addr(&addr).expect("bind abstract socket");
+
+        // SAFETY: the child only applies the ruleset, connects and `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = match RulesetBuilder::new()
+                .isolate_abstract_sockets_and_signals()
+                .build()
+                .and_then(ValidatedRuleset::apply)
+            {
+                Err(_) => 1,
+                Ok(()) => match UnixStream::connect_addr(&addr) {
+                    Err(_) => 0,
+                    Ok(_) => 2,
+                },
+            };
+            // SAFETY: _exit skips destructors, which must not run in a forked child.
+            unsafe { libc::_exit(code) };
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: `status` is a valid out-pointer.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child was killed");
+        match libc::WEXITSTATUS(status) {
+            0 => {}
+            1 => eprintln!("skipping: Landlock could not be applied on this kernel"),
+            _ => {
+                let release =
+                    std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+                let mut parts = release.split(|c: char| !c.is_ascii_digit());
+                let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                assert!(
+                    (major, minor) < (6, 12),
+                    "abstract socket connect succeeded outside the Landlock domain"
+                );
+                eprintln!("skipping: kernel {release} does not scope abstract sockets");
+            }
+        }
+    }
+
+    /// Control for the test above: without the IPC scope the same connect
+    /// succeeds, so the refusal there is caused by the scope.
+    #[test]
+    #[ignore = "control for the abstract socket test; run with --include-ignored"]
+    fn abstract_socket_reachable_without_ipc_scope_in_forked_child() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+
+        let name = format!("tpt-landlock-control-{}", std::process::id());
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).expect("abstract name");
+        let _listener = UnixListener::bind_addr(&addr).expect("bind abstract socket");
+
+        // SAFETY: the child only applies the ruleset, connects and `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = match RulesetBuilder::new()
+                .build()
+                .and_then(ValidatedRuleset::apply)
+            {
+                Err(_) => 1,
+                Ok(()) => match UnixStream::connect_addr(&addr) {
+                    Ok(_) => 0,
+                    Err(_) => 2,
+                },
+            };
+            // SAFETY: _exit skips destructors, which must not run in a forked child.
+            unsafe { libc::_exit(code) };
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: `status` is a valid out-pointer.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child was killed");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "control connect should succeed"
+        );
+    }
+
     /// Regression test: a forked child applies a filesystem allowlist and must
     /// be denied outside it. Runs in a fork so the restriction stays in the
     /// child. Needs a kernel with Landlock enabled.
