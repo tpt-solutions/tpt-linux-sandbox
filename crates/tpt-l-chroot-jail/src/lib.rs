@@ -1,8 +1,13 @@
 //! Minimal `pivot_root` and chroot jail setup with pseudo-filesystem mounting.
 //!
-//! Prefers `pivot_root(2)` over `chroot(2)` — `pivot_root` is harder to
-//! escape and works correctly with mount namespaces. Falls back to `chroot`
-//! with a logged warning if `pivot_root` is unavailable.
+//! Uses `pivot_root(2)`, which is the stronger option. The jail first makes
+//! the whole mount tree private, so mounts and unmounts inside the jail never
+//! propagate to the host. A `chroot(2)` fallback exists only as an explicit
+//! opt-in via [`JailConfig::allow_chroot_fallback`]: `chroot` is escapable by
+//! any process that keeps `CAP_SYS_CHROOT`.
+//!
+//! Must run inside a new mount namespace. Otherwise the mount changes would
+//! affect the host.
 //!
 //! # Example
 //!
@@ -29,7 +34,11 @@ pub enum JailError {
     /// The new root directory does not exist or is inaccessible.
     #[error("new root does not exist: {0}")]
     RootNotFound(PathBuf),
-    /// `pivot_root(2)` failed.
+    /// A path inside the new root is a symlink or not a directory, so it
+    /// cannot be used as a mount point safely.
+    #[error("unsafe path inside new root (symlink or non-directory): {0}")]
+    UnsafePath(PathBuf),
+    /// `pivot_root(2)` failed, or was unavailable and fallback is disabled.
     #[error("pivot_root failed: {0}")]
     PivotRoot(std::io::Error),
     /// `chroot(2)` fallback failed.
@@ -43,6 +52,14 @@ pub enum JailError {
         /// The underlying I/O error.
         source: std::io::Error,
     },
+    /// Creating or inspecting a path inside the new root failed.
+    #[error("filesystem operation failed for {path}: {source}")]
+    Io {
+        /// The path that failed.
+        path: PathBuf,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
 }
 
 /// Configuration for setting up a `pivot_root` / chroot jail.
@@ -52,7 +69,11 @@ pub struct JailConfig {
     mount_proc: bool,
     mount_dev_minimal: bool,
     mount_sys_ro: bool,
+    allow_chroot_fallback: bool,
 }
+
+/// Device nodes bind-mounted into the minimal `/dev`. Each comes from the host.
+const DEV_NODES: &[&str] = &["null", "zero", "random", "urandom", "tty"];
 
 impl JailConfig {
     /// Create a new jail configuration rooted at `new_root`.
@@ -62,16 +83,19 @@ impl JailConfig {
             mount_proc: false,
             mount_dev_minimal: false,
             mount_sys_ro: false,
+            allow_chroot_fallback: false,
         }
     }
 
-    /// Mount a fresh `procfs` at `<new_root>/proc`.
+    /// Mount a fresh `procfs` at `<new_root>/proc` (no suid, device or exec).
     pub fn mount_proc(mut self) -> Self {
         self.mount_proc = true;
         self
     }
 
-    /// Mount a minimal `devtmpfs` at `<new_root>/dev`.
+    /// Mount a minimal `/dev` at `<new_root>/dev`: a private tmpfs containing
+    /// bind-mounted `null`, `zero`, `random`, `urandom` and `tty` only. Other
+    /// host devices are not visible.
     pub fn mount_dev_minimal(mut self) -> Self {
         self.mount_dev_minimal = true;
         self
@@ -83,38 +107,59 @@ impl JailConfig {
         self
     }
 
+    /// Allow falling back to `chroot(2)` when `pivot_root(2)` is unavailable.
+    ///
+    /// Off by default. `chroot` is weaker: it leaves the old root reachable and
+    /// can be escaped by a process that holds `CAP_SYS_CHROOT`.
+    pub fn allow_chroot_fallback(mut self) -> Self {
+        self.allow_chroot_fallback = true;
+        self
+    }
+
     /// Enter the jail.
     ///
-    /// Attempts `pivot_root(2)` first. Falls back to `chroot(2)` with a
-    /// warning if the call is unavailable (e.g. no mount namespace).
+    /// # Errors
+    ///
+    /// Returns a [`JailError`] for the first step that fails. A mount or
+    /// unmount failure is always an error, never silently ignored.
     pub fn apply(self) -> Result<(), JailError> {
-        use nix::mount::{MsFlags, mount};
+        use nix::mount::{MntFlags, MsFlags, mount, umount2};
+        use nix::unistd::{chdir, chroot, pivot_root};
 
-        if !self.new_root.exists() {
+        if !self.new_root.is_dir() {
             return Err(JailError::RootNotFound(self.new_root.clone()));
         }
 
-        // Mount pseudo-filesystems inside new_root before pivoting so they
-        // exist in the new filesystem tree.
+        // Make every existing mount private before doing anything else. Under
+        // shared propagation, pivot_root fails with EINVAL, and mounts made in
+        // the jail would leak back to the host.
+        mount(
+            None::<&str>,
+            "/",
+            None::<&str>,
+            MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+            None::<&str>,
+        )
+        .map_err(|e| mount_error(Path::new("/"), e))?;
+
+        // Pseudo-filesystems are mounted inside new_root before pivoting, so
+        // they exist in the new tree.
         if self.mount_proc {
             let target = self.new_root.join("proc");
-            std::fs::create_dir_all(&target).ok();
+            ensure_dir(&target)?;
             mount(
                 Some("proc"),
                 &target,
                 Some("proc"),
-                MsFlags::empty(),
+                MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
                 None::<&str>,
             )
-            .map_err(|e| JailError::Mount {
-                path: target,
-                source: std::io::Error::from_raw_os_error(e as i32),
-            })?;
+            .map_err(|e| mount_error(&target, e))?;
         }
 
         if self.mount_sys_ro {
             let target = self.new_root.join("sys");
-            std::fs::create_dir_all(&target).ok();
+            ensure_dir(&target)?;
             mount(
                 Some("sysfs"),
                 &target,
@@ -122,30 +167,15 @@ impl JailConfig {
                 MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
                 None::<&str>,
             )
-            .map_err(|e| JailError::Mount {
-                path: target,
-                source: std::io::Error::from_raw_os_error(e as i32),
-            })?;
+            .map_err(|e| mount_error(&target, e))?;
         }
 
         if self.mount_dev_minimal {
-            let target = self.new_root.join("dev");
-            std::fs::create_dir_all(&target).ok();
-            mount(
-                Some("devtmpfs"),
-                &target,
-                Some("devtmpfs"),
-                MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC,
-                Some("mode=755"),
-            )
-            .map_err(|e| JailError::Mount {
-                path: target,
-                source: std::io::Error::from_raw_os_error(e as i32),
-            })?;
+            self.mount_minimal_dev()?;
         }
 
-        // Bind-mount new_root onto itself so it becomes a separate mount point,
-        // which is required by pivot_root.
+        // pivot_root requires the new root to be a mount point. Bind-mount it
+        // onto itself.
         mount(
             Some(&self.new_root),
             &self.new_root,
@@ -153,43 +183,124 @@ impl JailConfig {
             MsFlags::MS_BIND | MsFlags::MS_REC,
             None::<&str>,
         )
-        .map_err(|e| JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32)))?;
+        .map_err(|e| mount_error(&self.new_root, e))?;
 
-        // Create a temporary directory inside new_root to receive the old root.
         let put_old = self.new_root.join(".put_old");
-        std::fs::create_dir_all(&put_old).map_err(|e| JailError::PivotRoot(e))?;
+        ensure_dir(&put_old)?;
 
-        // Try pivot_root; fall back to chroot on ENOSYS / EINVAL.
-        match nix::unistd::pivot_root(&self.new_root, &put_old) {
+        // pivot_root(".", ".put_old") is relative to the working directory, so
+        // enter the new root first.
+        chdir(&self.new_root).map_err(|e| JailError::PivotRoot(errno_io(e)))?;
+
+        match pivot_root(".", ".put_old") {
             Ok(()) => {
-                nix::unistd::chdir("/").map_err(|e| {
-                    JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32))
+                chdir("/").map_err(|e| JailError::PivotRoot(errno_io(e)))?;
+                // Detach the old root. If this fails the host is still reachable,
+                // so the failure is fatal.
+                umount2("/.put_old", MntFlags::MNT_DETACH)
+                    .map_err(|e| JailError::PivotRoot(errno_io(e)))?;
+                std::fs::remove_dir("/.put_old").map_err(|source| JailError::Io {
+                    path: PathBuf::from("/.put_old"),
+                    source,
                 })?;
-                // Unmount the old root lazily and remove the directory.
-                nix::mount::umount2("/.put_old", nix::mount::MntFlags::MNT_DETACH).map_err(
-                    |e| JailError::PivotRoot(std::io::Error::from_raw_os_error(e as i32)),
-                )?;
-                std::fs::remove_dir("/.put_old").ok();
             }
-            Err(nix::errno::Errno::ENOSYS) | Err(nix::errno::Errno::EINVAL) => {
+            Err(e @ (nix::errno::Errno::ENOSYS | nix::errno::Errno::EINVAL))
+                if self.allow_chroot_fallback =>
+            {
                 eprintln!(
-                    "tpt-l-chroot-jail: pivot_root(2) unavailable, \
-                     falling back to chroot(2) (less secure)"
+                    "tpt-l-chroot-jail: pivot_root(2) unavailable ({e}), \
+                     falling back to chroot(2) as requested (less secure)"
                 );
-                std::fs::remove_dir(&put_old).ok();
-                nix::unistd::chroot(&self.new_root)
-                    .map_err(|e| JailError::Chroot(std::io::Error::from_raw_os_error(e as i32)))?;
-                nix::unistd::chdir("/")
-                    .map_err(|e| JailError::Chroot(std::io::Error::from_raw_os_error(e as i32)))?;
+                let _ = std::fs::remove_dir(".put_old");
+                chroot(".").map_err(|e| JailError::Chroot(errno_io(e)))?;
+                chdir("/").map_err(|e| JailError::Chroot(errno_io(e)))?;
             }
             Err(e) => {
-                return Err(JailError::PivotRoot(std::io::Error::from_raw_os_error(
-                    e as i32,
-                )));
+                return Err(JailError::PivotRoot(errno_io(e)));
             }
         }
 
         Ok(())
+    }
+
+    /// Build the minimal `/dev` described on [`mount_dev_minimal`](Self::mount_dev_minimal).
+    fn mount_minimal_dev(&self) -> Result<(), JailError> {
+        use nix::mount::{MsFlags, mount};
+
+        let dev = self.new_root.join("dev");
+        ensure_dir(&dev)?;
+        mount(
+            Some("tmpfs"),
+            &dev,
+            Some("tmpfs"),
+            MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC,
+            Some("mode=755,size=1m"),
+        )
+        .map_err(|e| mount_error(&dev, e))?;
+
+        for name in DEV_NODES {
+            let target = dev.join(name);
+            ensure_file(&target)?;
+            let source = Path::new("/dev").join(name);
+            mount(
+                Some(&source),
+                &target,
+                None::<&str>,
+                MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .map_err(|e| mount_error(&target, e))?;
+        }
+        Ok(())
+    }
+}
+
+fn mount_error(path: &Path, e: nix::errno::Errno) -> JailError {
+    JailError::Mount {
+        path: path.to_path_buf(),
+        source: errno_io(e),
+    }
+}
+
+fn errno_io(e: nix::errno::Errno) -> std::io::Error {
+    std::io::Error::from_raw_os_error(e as i32)
+}
+
+/// Create `path` as a directory, refusing symlinks so a hostile rootfs cannot
+/// redirect a mount to the host.
+fn ensure_dir(path: &Path) -> Result<(), JailError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(JailError::UnsafePath(path.to_path_buf())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(path).map_err(|source| JailError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+        Err(source) => Err(JailError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Create `path` as an empty regular file (a bind-mount target), refusing
+/// symlinks.
+fn ensure_file(path: &Path) -> Result<(), JailError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        Ok(_) => Err(JailError::UnsafePath(path.to_path_buf())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::File::create(path)
+            .map(drop)
+            .map_err(|source| JailError::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
+        Err(source) => Err(JailError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -211,5 +322,31 @@ mod tests {
         assert!(j.mount_proc);
         assert!(!j.mount_dev_minimal);
         assert!(j.mount_sys_ro);
+        assert!(!j.allow_chroot_fallback);
+    }
+
+    #[test]
+    fn chroot_fallback_is_opt_in() {
+        assert!(
+            JailConfig::new("/")
+                .allow_chroot_fallback()
+                .allow_chroot_fallback
+        );
+    }
+
+    #[test]
+    fn ensure_dir_rejects_symlink() {
+        let dir = std::env::temp_dir().join(format!("tpt-jail-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = ensure_dir(&link).unwrap_err();
+        assert!(matches!(err, JailError::UnsafePath(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

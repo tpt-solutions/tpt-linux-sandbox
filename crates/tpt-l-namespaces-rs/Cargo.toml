@@ -1,7 +1,7 @@
 [package]
 name = "tpt-l-namespaces-rs"
 version = "0.1.0"
-description = "Safe wrappers around unshare(2) and clone3(2) for Linux namespaces"
+description = "Safe wrappers around unshare(2) for Linux namespaces"
 readme = "README.md"
 keywords = ["namespaces", "unshare", "linux", "sandbox", "isolation"]
 categories = ["os::linux-apis"]

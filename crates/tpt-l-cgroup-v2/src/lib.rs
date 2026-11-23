@@ -1,7 +1,11 @@
-//! cgroup v2 hierarchy management for CPU, memory, and I/O limits.
+//! cgroup v2 hierarchy management for CPU, memory, I/O and process-count limits.
 //!
 //! Operates directly on the cgroupfs at `/sys/fs/cgroup` — no external
 //! library dependency required.
+//!
+//! The directory is created with `mkdir` (not `mkdir -p`), so a stale
+//! directory from an earlier run is reported instead of being silently reused
+//! with old limits.
 //!
 //! # Example
 //!
@@ -11,6 +15,7 @@
 //! let cg = CgroupConfig::new("my-sandbox")
 //!     .cpu_quota(50)           // 50% of one core
 //!     .memory_limit(128 << 20) // 128 MiB
+//!     .pids_limit(64)
 //!     .io_weight(50);
 //!
 //! cg.apply().expect("cgroup setup failed");
@@ -29,15 +34,25 @@ pub enum CgroupError {
     /// The cgroupfs is not mounted where expected.
     #[error("cgroupfs not mounted at {path}: {source}")]
     NotMounted {
+        /// The directory that was expected to exist.
         path: PathBuf,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
     /// Writing a cgroup control file failed.
     #[error("failed to write cgroup control file {path}: {source}")]
     Write {
+        /// The control file that could not be written.
         path: PathBuf,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
+    /// The cgroup name is not a single, plain path component.
+    #[error("invalid cgroup name {0:?}: must be a single non-empty component without '/' or '..'")]
+    InvalidName(String),
+    /// A cgroup with this name already exists (possibly stale from an earlier run).
+    #[error("cgroup {0} already exists; refusing to reuse it")]
+    AlreadyExists(PathBuf),
 }
 
 /// Configuration for a cgroup v2 hierarchy.
@@ -47,6 +62,7 @@ pub struct CgroupConfig {
     cpu_quota_percent: Option<u32>,
     memory_limit_bytes: Option<u64>,
     io_weight: Option<u32>,
+    pids_max: Option<u32>,
 }
 
 impl CgroupConfig {
@@ -59,7 +75,14 @@ impl CgroupConfig {
             cpu_quota_percent: None,
             memory_limit_bytes: None,
             io_weight: None,
+            pids_max: None,
         }
+    }
+
+    /// The cgroup's name (its directory name under `/sys/fs/cgroup`).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Limit CPU usage to `percent` percent of one core (clamped 1–100).
@@ -68,9 +91,17 @@ impl CgroupConfig {
         self
     }
 
-    /// Limit memory usage to `bytes`.
+    /// Limit memory usage to `bytes`. Swap is disabled for the cgroup so the
+    /// limit cannot be bypassed by swapping.
     pub fn memory_limit(mut self, bytes: u64) -> Self {
         self.memory_limit_bytes = Some(bytes);
+        self
+    }
+
+    /// Limit the number of processes and threads (`pids.max`), which bounds
+    /// fork bombs.
+    pub fn pids_limit(mut self, max: u32) -> Self {
+        self.pids_max = Some(max);
         self
     }
 
@@ -80,53 +111,113 @@ impl CgroupConfig {
         self
     }
 
-    /// Create the cgroup hierarchy directory and write configured limits.
-    pub fn apply(&self) -> Result<(), CgroupError> {
-        let base = Path::new(Self::CGROUP_ROOT).join(&self.name);
+    /// Resolve the cgroup directory, rejecting names that could escape the root.
+    fn path(&self) -> Result<PathBuf, CgroupError> {
+        let name = &self.name;
+        let valid = !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains('/')
+            && !name.contains('\0');
+        if !valid {
+            return Err(CgroupError::InvalidName(name.clone()));
+        }
+        Ok(Path::new(Self::CGROUP_ROOT).join(name))
+    }
 
-        std::fs::create_dir_all(&base).map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                CgroupError::NotMounted {
-                    path: base.clone(),
-                    source,
-                }
-            } else {
+    /// Controllers this configuration needs enabled in the parent's
+    /// `cgroup.subtree_control`.
+    fn required_controllers(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.cpu_quota_percent.is_some() {
+            out.push("cpu");
+        }
+        if self.memory_limit_bytes.is_some() {
+            out.push("memory");
+        }
+        if self.io_weight.is_some() {
+            out.push("io");
+        }
+        if self.pids_max.is_some() {
+            out.push("pids");
+        }
+        out
+    }
+
+    /// Create the cgroup hierarchy directory and write configured limits.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`CgroupError::AlreadyExists`] if the directory is present,
+    /// and with [`CgroupError::Write`] if a controller cannot be enabled or a
+    /// limit cannot be written (typically a permissions or delegation problem).
+    pub fn apply(&self) -> Result<(), CgroupError> {
+        let base = self.path()?;
+
+        // Enable only the controllers the parent does not already delegate.
+        // Rewriting an enabled controller is unnecessary, and in a cgroup that
+        // holds processes the write can fail with EBUSY.
+        let control = Path::new(Self::CGROUP_ROOT).join("cgroup.subtree_control");
+        let enabled = std::fs::read_to_string(&control).unwrap_or_default();
+        let missing: Vec<String> = self
+            .required_controllers()
+            .into_iter()
+            .filter(|c| !enabled.split_whitespace().any(|e| e == *c))
+            .map(|c| format!("+{c}"))
+            .collect();
+        if !missing.is_empty() {
+            std::fs::write(&control, format!("{}\n", missing.join(" "))).map_err(|source| {
                 CgroupError::Write {
-                    path: base.clone(),
+                    path: control,
                     source,
                 }
-            }
+            })?;
+        }
+
+        std::fs::create_dir(&base).map_err(|source| match source.kind() {
+            std::io::ErrorKind::AlreadyExists => CgroupError::AlreadyExists(base.clone()),
+            std::io::ErrorKind::NotFound => CgroupError::NotMounted {
+                path: base.clone(),
+                source,
+            },
+            _ => CgroupError::Write {
+                path: base.clone(),
+                source,
+            },
         })?;
 
         if let Some(percent) = self.cpu_quota_percent {
             // cpu.max format: "{quota_us} {period_us}\n"
             // We use a 100ms period; quota = percent * 1000 µs per period.
             let quota_us = u64::from(percent) * 1_000;
-            let path = base.join("cpu.max");
-            std::fs::write(&path, format!("{quota_us} 100000\n"))
-                .map_err(|source| CgroupError::Write { path, source })?;
+            Self::write_control(&base, "cpu.max", &format!("{quota_us} 100000\n"))?;
         }
 
         if let Some(bytes) = self.memory_limit_bytes {
-            let path = base.join("memory.max");
-            std::fs::write(&path, format!("{bytes}\n"))
-                .map_err(|source| CgroupError::Write { path, source })?;
+            Self::write_control(&base, "memory.max", &format!("{bytes}\n"))?;
+            Self::write_control(&base, "memory.swap.max", "0\n")?;
         }
 
         if let Some(weight) = self.io_weight {
-            let path = base.join("io.weight");
-            std::fs::write(&path, format!("default {weight}\n"))
-                .map_err(|source| CgroupError::Write { path, source })?;
+            Self::write_control(&base, "io.weight", &format!("default {weight}\n"))?;
+        }
+
+        if let Some(max) = self.pids_max {
+            Self::write_control(&base, "pids.max", &format!("{max}\n"))?;
         }
 
         Ok(())
     }
 
+    /// Write one control file below `base`.
+    fn write_control(base: &Path, file: &str, contents: &str) -> Result<(), CgroupError> {
+        let path = base.join(file);
+        std::fs::write(&path, contents).map_err(|source| CgroupError::Write { path, source })
+    }
+
     /// Move the calling process into this cgroup.
     pub fn enter(&self) -> Result<(), CgroupError> {
-        let path = Path::new(Self::CGROUP_ROOT)
-            .join(&self.name)
-            .join("cgroup.procs");
+        let path = self.path()?.join("cgroup.procs");
         let pid = std::process::id();
         std::fs::write(&path, format!("{pid}\n"))
             .map_err(|source| CgroupError::Write { path, source })
@@ -134,8 +225,20 @@ impl CgroupConfig {
 
     /// Remove the cgroup hierarchy directory (must have no member processes).
     pub fn destroy(&self) -> Result<(), CgroupError> {
-        let path = Path::new(Self::CGROUP_ROOT).join(&self.name);
+        let path = self.path()?;
         std::fs::remove_dir(&path).map_err(|source| CgroupError::Write { path, source })
+    }
+
+    /// Move the calling process back to the cgroup root and remove this
+    /// cgroup. Used to roll back when a later sandbox stage fails.
+    pub fn release(&self) -> Result<(), CgroupError> {
+        let root_procs = Path::new(Self::CGROUP_ROOT).join("cgroup.procs");
+        let pid = std::process::id();
+        std::fs::write(&root_procs, format!("{pid}\n")).map_err(|source| CgroupError::Write {
+            path: root_procs,
+            source,
+        })?;
+        self.destroy()
     }
 }
 
@@ -174,5 +277,38 @@ mod tests {
         let expected_us = 50u64 * 1_000;
         assert_eq!(expected_us, 50_000);
         assert_eq!(c.cpu_quota_percent, Some(50));
+    }
+
+    #[test]
+    fn rejects_traversal_names() {
+        for bad in ["", ".", "..", "../x", "/etc", "a/b", "x\0y"] {
+            let c = CgroupConfig::new(bad);
+            assert!(
+                matches!(c.path(), Err(CgroupError::InvalidName(_))),
+                "name {bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_plain_name() {
+        let c = CgroupConfig::new("tpt-sandbox-42");
+        assert_eq!(
+            c.path().unwrap(),
+            Path::new("/sys/fs/cgroup/tpt-sandbox-42")
+        );
+    }
+
+    #[test]
+    fn required_controllers_follow_config() {
+        assert_eq!(CgroupConfig::new("t").required_controllers().len(), 0);
+        let c = CgroupConfig::new("t").memory_limit(1).pids_limit(8);
+        assert_eq!(c.required_controllers(), vec!["memory", "pids"]);
+    }
+
+    #[test]
+    fn pids_limit_stored() {
+        let c = CgroupConfig::new("t").pids_limit(64);
+        assert_eq!(c.pids_max, Some(64));
     }
 }
