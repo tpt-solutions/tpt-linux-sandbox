@@ -238,6 +238,91 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 
 ---
 
+## Phase 12: Review Follow-ups (2026-11-23)
+
+> From a source-reading review. Status key as above. Line numbers are approximate. Verification: the Linux crates were built and tested in WSL Ubuntu 24.04 (kernel 6.18) as root, with `cargo clippy -D warnings` and `cargo test --workspace -- --include-ignored` passing. The unprivileged run and the delegated-cgroup run were **not** done; CI workflows and `install.sh` have **not** run.
+
+### Tier 1: adoption blockers
+- [x] **Child cwd defaults to the invoking directory** (`policy.rs` `resolve_paths`; `main.rs`) — **verified** (`cli_command_starts_in_invoking_directory`). Inside `--new-root` the default is `/`. Doc examples now pass `--allow-read .` because the profile does not grant the cwd.
+- [~] **Near-empty environment** — **partly done**: unset `--pass-env` names now warn (**verified**); `build` profile grants `/tmp` writes (**checked**). HOME/TMPDIR are still not passed through — open, since passing HOME exposes the host home directory.
+- [x] **GitHub Action works out of the box** (`action.yml`) — default profile `build`, new `workdir` and `version` inputs, `sudo -n` step that warns instead of hiding failures. **Not run** on GitHub. `relax-apparmor-userns` stays on by default, since runners need it.
+- [ ] **Install paths disagree and need a published release** (README, quick-start, devcontainer, Dockerfile, CLI README) — needs a `v0.1.0` release; requires your decision on publishing.
+
+### Tier 1: correctness bugs
+- [x] **cgroup created under the caller's own cgroup** (`cgroup-v2/src/lib.rs`) — `/proc/self/cgroup` is read at construction; `apply` falls back to the cgroupfs root only when the caller's cgroup refuses controllers (EBUSY, "no internal processes"). **verified** as root (memory-limit test uses the fallback); parsing unit-tested. **Delegated unprivileged run not done.**
+- [x] **Supervisor forwards SIGHUP/SIGINT/SIGTERM and kills the namespace on parent death** (`main.rs`) — the cgroup is now created before fork, so the supervisor removes it. **verified** (`cli_forwards_sigterm_to_the_command`). The relay cannot forward signals itself (`kill` is not in the seccomp allowlist); it dies by the signal and `PR_SET_PDEATHSIG` ends the namespace.
+- [x] **cgroup leak on error paths** — the supervisor removes the cgroup after a failed wait; `apply` removes the directory when a limit write fails — **checked** (code path; no test for the failing write).
+- [x] **Landlock rules checked under `--new-root`** (`landlock-highlevel` `under_root`; `sandbox` `validate`) — **checked**. A missing path now fails in validation, before seccomp. The error text is still a long nested chain (see the follow-up below).
+- [x] **`--learn` log in a private directory** (`tools.rs`) — `create_dir` refuses existing paths, including symlinks — **verified** (unit tests for parsing; the strace run itself was not executed here, since `strace` is not installed).
+
+### Tier 2: smaller fixes and doc sync
+- [x] `/dev` tmpfs `nodev` — **checked** (the pivot test passes, but it does not exercise device nodes).
+- [ ] Mount-point symlink check covers only the final path component (`chroot-jail`, `ensure_dir`/`ensure_file`)
+- [x] `close_range` fallback uses the open-file limit — **checked**
+- [x] `subscribe()` documents that it needs a Tokio runtime — docs only.
+- [x] `selinux-context` rejects an empty level; the dead filter is removed — **verified** (`parse_rejects_empty_level`)
+- [x] Docs: exit codes (1 = failure, 2 = usage, and `--doctor` 1 on warnings) — docs in CLI README and quick-start.
+- [x] `--doctor`: Refer 5.19 and Truncate 6.2 listed separately; TCP (6.7) and IPC (6.12) rows; `strace` check; exit 1 on warnings — **verified** (run in WSL).
+- [x] `--dry-run` says IPC isolation is requested and best-effort; runs the sandbox `validate()` — **verified**.
+- [x] Profiles: `untrusted-python` comment fixed; `maintainer-script` spec reference removed; the two untrusted profiles note their shared baseline. Duplicates are kept on purpose.
+- [x] Validation errors say where a value can come from (flag or policy file) — **checked**.
+- [x] `--learn` writes `allow_write` for open flags with write intent; handles escaped quotes — **verified** (unit tests).
+
+### Tier 3: CI, release, supply chain
+- [x] MSRV job runs `cargo +1.85` (the toolchain file pins stable); `--locked` added to CI — **not run** on GitHub. Two `cargo +1.85` details are unverified: whether `dtolnay/rust-toolchain@1.85` installs the toolchain by that name.
+- [x] Actions pinned to commit SHAs (resolved with `git ls-remote`); `permissions: contents: read` at top level; release write permission moved to the job — **not run**. The `dtolnay` action is pinned to a snapshot of its `stable` branch.
+- [x] Silent skips fail the root job: the job runs with `--nocapture` and fails on any `skipping:` line — **not run on GitHub**; locally the root run has no skips.
+- [~] Release: tag-vs-version check (**not run**) and `checksum: sha256` so the release publishes `.sha256` files (**not run**; check the action's output name on the first real release). Provenance attestation not added.
+- [x] `install.sh`: version pin via `TPT_SANDBOX_VERSION`, SHA-256 verification, fails closed if the checksum is missing — **checked** (`sh -n`); not run against a release.
+- [ ] Dockerfile: checksum verification, pinned version, digest-pinned base image; Docker build and hadolint jobs
+- [ ] Nix flake: `flake.lock` and a CI job, or remove until tested
+- [x] Portable job renamed to say what it checks — **not run**.
+- [ ] Test gaps: `doctor()` output and `--learn` flow (partly covered), `--policy` file errors, `--seccomp off|log`, `--pids-limit 0`, command-not-found exit code
+
+### Tier 4: automation
+- [x] `.github/dependabot.yml` for cargo and github-actions — **checked** (YAML written; not validated by GitHub).
+- [ ] `release-plz` or cargo-release + git-cliff for versions and changelog
+- [ ] `justfile`/xtask with `just ci`; `.pre-commit-config.yaml`
+- [x] `rust-toolchain.toml` installs clippy and rustfmt — **checked**
+
+### Tier 5: features
+- [ ] `tpt-sandbox check <policy>` — schema and path validation without a command (S)
+- [ ] `--print-schema` and `#:schema` header in `--print-profile` for Taplo/VS Code (S)
+- [ ] Shell completions and man pages (clap_complete, clap_mangen), shipped in the `.deb` (S)
+- [ ] `--doctor --json` (S) — `--doctor` exit code is done; JSON output is not
+- [x] `--memory-limit` accepts K, M and G suffixes — **verified** (`size_tests`, and the memory test passes as root)
+- [ ] `--learn -o file`; complete TOML output (S-M) — `allow_write` is now emitted, but there is no `-o`
+- [ ] Explain denials: re-run under strace, list EACCES paths and the grant that covers each (M)
+- [ ] Toolchain profiles (`cargo`, `node`, `python-venv`) with `$HOME`/`$PWD` expansion in policy files (M)
+- [ ] Profile sharing: user profile directory, `--profile <path>` (M)
+
+### Adoption: examples and templates
+- [ ] CLI recipes in `docs/recipes/`: Python venv, npm install, cargo build under `~/.cargo`, make/gcc, offline untrusted script, CI step with workdir
+- [ ] CI job that runs every documented recipe command as a smoke test
+- [ ] "First five minutes" path: `--doctor` → `--dry-run` → `--learn` → save policy → `check`
+- [ ] Schema association (VS Code, Taplo) in quick-start
+- [~] Quick Start examples now include `--allow-read .`; they have not been run on a clean machine
+
+### Step-by-step follow-up (2026-11-23, second pass)
+
+- [x] **Unprivileged run** — all test binaries as `nobody` (not UID 1000: no new account was created): every suite passes; cgroup and memory tests skip with their stated reasons. **verified**
+- [x] **Delegated cgroup, root** (`systemd-run --scope -p Delegate=yes`) — **verified**; a memory-limited command runs in `…/tpt-sandbox-<pid>` with `memory.max` set.
+- [x] **Delegated cgroup, non-root** (`systemd-run --wait -p User=nobody -p Delegate=yes`) — the cgroup unit tests pass. The CLI memory test skips, because the harness shares the cgroup. **Found and fixed:** the supervisor used the cgroupfs root after the own-cgroup path failed. A process alone in its delegated cgroup now moves into `tpt-sandbox-host` and succeeds (checked by hand). Limitation kept on purpose: a cgroup that holds other processes cannot enable controllers without moving them, and we do not move other processes. The error now names the caller's cgroup.
+- [x] **`--new-root` error names the missing path** — **verified** (`cli_new_root_without_system_directories_explains_itself`)
+- [x] **Doctor checks the caller's cgroup** — **verified** (run in WSL)
+- [x] **Step 2, static checks** — YAML parses for `ci.yml`, `release.yml`, `dependabot.yml`, `action.yml`; `sh -n` passes for `install.sh` and the smoke script. `actionlint` and `shellcheck` are not installed, so those were not run. **Still open:** GitHub has not run the workflows.
+- [x] **Step 4, recipes** — `docs/recipes/` (index plus Python venv, Cargo, C with make, untrusted script, CI step) and `scripts/recipes-smoke.sh`, which runs the recipe commands. Run in WSL: **all pass**. The CI step is wired into the unprivileged job; not run on GitHub. Not smoke-tested: `pip install`, `cargo build`, `cargo test`, the CI action.
+- [x] **Step 5, `--check-policy FILE`** — **verified** (two integration tests). Flag rather than `check` subcommand, because a subcommand clashes with the trailing command; same style as `--print-profile`.
+- [x] **Bug found by the recipes: `make` could not run `cc` under the sandbox.** Four syscalls were missing from the base allowlist: `faccessat2` (used by `eaccess`), `getrusage`, `setresuid` and `setresgid` (GNU make calls the last two at startup). With `EPERM` as the default action, make reported `cc: Operation not permitted`. Added all four. `setresuid`/`setresgid` can only keep the caller's own ids, because the user namespace maps one id; the base-profile doc comment says so. **verified** (smoke test and full suite).
+
+### Follow-ups still open
+- [ ] Move processes into a leaf (all of them, not just this one) so a delegated cgroup shared with other processes can take controllers. Needs a decision: it moves processes the caller does not own.
+- [ ] Example `drop_caps` panics as an unprivileged user (`drop_caps.rs:14`); the todo's earlier note said it reports the missing privilege. It should print a message and exit cleanly.
+- [ ] `tail_audit` exits 1 unprivileged, which is the documented behaviour; leave it, or document the exit code.
+- [ ] Exit code 2 from `tpt-sandbox` with no arguments: confirm that is the intended usage error.
+
+---
+
 ## Open Questions (from spec §5)
 
 - [x] Default syscall and filesystem allowlist for maintainer scripts — proposed as the `maintainer-script` profile. **Needs review** against tpt-deb-toolkit's real scripts.
