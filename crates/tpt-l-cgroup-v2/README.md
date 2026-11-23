@@ -13,9 +13,12 @@ has no dependencies beyond the standard library and `thiserror`.
 - CPU limit as a percentage of one core (`cpu.max`), clamped to 1–100.
 - Memory limit in bytes (`memory.max`).
 - I/O weight (`io.weight`), clamped to 1–10000. The kernel default is 100.
-- `apply` creates the group directory and writes the control files.
+- Process-count limit (`pids.max`) with `pids_limit`.
+- `apply` creates the group under the caller's own cgroup and writes the control
+  files. It enables only the controllers that are missing.
 - `enter` moves the calling process into the group (`cgroup.procs`).
-- `destroy` removes the group directory.
+- `release` moves the caller out of the group, then removes it. `destroy`
+  removes the group directory.
 
 ## Requirements
 
@@ -23,8 +26,9 @@ has no dependencies beyond the standard library and `thiserror`.
 - Write access to the caller's own cgroup (the directory in
   `/proc/self/cgroup`), where the new group is created. Typically this means
   root, or a systemd-delegated unit (`Delegate=yes`).
-- The relevant controllers (`cpu`, `memory`, `io`) enabled for the parent
-  group. Missing controllers surface as `CgroupError` values from `apply`.
+- The controllers a configuration uses (`cpu`, `memory`, `io`, `pids`) available
+  in the parent group. `apply` enables the missing ones, and a failure surfaces
+  as a `CgroupError` from `apply`.
 - Rust 1.85 or newer.
 
 ## Installation
@@ -60,10 +64,14 @@ cg.destroy().expect("cgroup cleanup failed");
 | `cpu_quota(percent)` | method | CPU limit, clamped to 1–100. |
 | `memory_limit(bytes)` | method | Hard memory limit. |
 | `io_weight(weight)` | method | I/O weight, clamped to 1–10000. |
+| `pids_limit(max)` | method | Maximum number of processes and threads (`pids.max`). |
+| `move_existing_processes()` | method | Let `apply` move other processes of the caller's cgroup into a leaf when needed. Off by default. |
+| `name()`, `parent()` | methods | The group name, and the cgroup directory it is created under. |
 | `apply(&self)` | method | Create the group and write its limits. |
 | `enter(&self)` | method | Move the calling process into the group. |
+| `release(&self)` | method | Move the caller out of the group and remove it. |
 | `destroy(&self)` | method | Remove the group directory. |
-| `CgroupError` | enum | Errors from any filesystem operation. |
+| `CgroupError` | enum | Errors from any filesystem operation, including `InvalidName`, `AlreadyExists` and `SharedCgroup`. |
 
 ## Behaviour and limitations
 
@@ -74,9 +82,13 @@ cg.destroy().expect("cgroup cleanup failed");
   other processes. The error says so. `move_existing_processes()` moves those
   processes into a leaf (`tpt-sandbox-host`) to make it work; they stay there
   afterwards. It is off by default.
-- **Cleanup is manual.** The group is not removed on drop. Call `destroy`
-  after all processes have exited. The kernel refuses to remove a group that
-  still has processes.
+- **Names are checked.** The name must be a single path component without `/`
+  or `..` (`InvalidName`).
+- **Stale groups are refused.** If a group with the same name already exists,
+  `apply` returns `AlreadyExists` rather than reusing it.
+- **Cleanup is manual.** The group is not removed on drop. Call `release` or
+  `destroy` after all processes have exited. The kernel refuses to remove a group
+  that still has processes.
 - **Clamping is silent.** Out-of-range values are clamped rather than rejected.
   Read back the values you need if exact limits matter.
 - **Limits are per group, not per process.** Every process in the group shares
@@ -89,8 +101,9 @@ cargo test -p tpt-l-cgroup-v2
 ```
 
 The unit tests check the CPU quota arithmetic, the clamping of CPU and I/O
-values, and that memory limits are stored. They do not create cgroups, so they
-need no privileges.
+values, name validation and the stored limits. They do not create cgroups, so
+they need no privileges. Forked-child tests create, join and remove a group. They
+skip when the caller has no cgroup write access.
 
 ## Minimum supported Rust version
 
