@@ -277,8 +277,25 @@ impl Sandbox {
         }
 
         // Resolve Landlock paths now. `build` only opens them; nothing is enforced.
+        // With a jail, the rules are resolved after the pivot, so check them
+        // under the new root. Checking the host paths would miss paths that
+        // exist on the host but not in the jail.
         if let Some(landlock) = &self.landlock {
-            landlock.clone().build()?;
+            let view = match &self.jail {
+                Some(jail) => landlock.clone().under_root(jail.root()),
+                None => landlock.clone(),
+            };
+            view.build().map_err(|e| match (&self.jail, e) {
+                (Some(jail), tpt_l_landlock_highlevel::LandlockError::PathOpen { path, .. }) => {
+                    SandboxError::Validation(format!(
+                        "{} does not exist inside the new root {}; populate the new root \
+                         or grant only paths it contains",
+                        path.display(),
+                        jail.root().display()
+                    ))
+                }
+                (_, e) => SandboxError::Landlock(e),
+            })?;
         }
 
         // A user namespace without a mount namespace is allowed, but the

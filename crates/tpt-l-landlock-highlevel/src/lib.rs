@@ -111,6 +111,23 @@ impl RulesetBuilder {
         self
     }
 
+    /// Re-anchor every granted path under `root`, as seen from inside a jail
+    /// whose new root is `root`. `/usr` becomes `<root>/usr`. Use this to check
+    /// the paths with [`build`](Self::build) before a `pivot_root`, where the
+    /// rules are resolved.
+    #[must_use]
+    pub fn under_root(mut self, root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref();
+        let anchor = |p: &mut PathBuf| {
+            let relative = p.strip_prefix("/").unwrap_or(p.as_path()).to_owned();
+            *p = root.join(relative);
+        };
+        self.read_paths.iter_mut().for_each(anchor);
+        self.write_paths.iter_mut().for_each(anchor);
+        self.exec_paths.iter_mut().for_each(anchor);
+        self
+    }
+
     /// Permit binding a TCP socket to `port`. Once any bind port is allowed,
     /// binding to every other port is denied (Linux 6.7+).
     pub fn allow_tcp_bind(mut self, port: u16) -> Self {

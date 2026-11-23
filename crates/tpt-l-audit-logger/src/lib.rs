@@ -139,6 +139,9 @@ const POLL_INTERVAL_MS: libc::c_int = 500;
 ///
 /// `buffer` sets the channel's capacity.
 ///
+/// The reader runs on Tokio's blocking pool, so this must be called from
+/// inside a Tokio runtime; outside one it panics.
+///
 /// # Errors
 ///
 /// Returns [`AuditError::PermissionDenied`] without `CAP_AUDIT_READ`, or a

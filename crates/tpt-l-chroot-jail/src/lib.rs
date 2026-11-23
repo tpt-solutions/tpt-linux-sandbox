@@ -87,6 +87,12 @@ impl JailConfig {
         }
     }
 
+    /// The directory that becomes `/` inside the jail.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.new_root
+    }
+
     /// Mount a fresh `procfs` at `<new_root>/proc` (no suid, device or exec).
     pub fn mount_proc(mut self) -> Self {
         self.mount_proc = true;
@@ -233,7 +239,7 @@ impl JailConfig {
             Some("tmpfs"),
             &dev,
             Some("tmpfs"),
-            MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC,
+            MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
             Some("mode=755,size=1m"),
         )
         .map_err(|e| mount_error(&dev, e))?;

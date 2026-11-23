@@ -1,7 +1,8 @@
 //! Create a cgroup with a process limit, join it, and show the membership.
 //!
-//! Needs write access to /sys/fs/cgroup and the `memory` and `pids` controllers
-//! delegated to this user (root, or a systemd unit with `Delegate=yes`).
+//! The group is created under this process's own cgroup, so it needs write
+//! access to that directory and the `memory` and `pids` controllers delegated
+//! to it (a systemd unit with `Delegate=yes`, or root).
 //! Run with `cargo run -p tpt-l-cgroup-v2 --example limited_group`.
 
 use tpt_l_cgroup_v2::CgroupConfig;
@@ -23,7 +24,7 @@ fn main() {
         return;
     }
 
-    let procs = std::fs::read_to_string(format!("/sys/fs/cgroup/{}/cgroup.procs", cg.name()))
+    let procs = std::fs::read_to_string(cg.parent().join(cg.name()).join("cgroup.procs"))
         .unwrap_or_default();
     println!("processes in the group: {}", procs.trim());
 

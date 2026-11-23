@@ -1,7 +1,8 @@
 //! cgroup v2 hierarchy management for CPU, memory, I/O and process-count limits.
 //!
-//! Operates directly on the cgroupfs at `/sys/fs/cgroup` — no external
-//! library dependency required.
+//! Operates directly on the cgroupfs — no external library dependency
+//! required. A cgroup is created under the calling process's own cgroup, so it
+//! works under systemd `Delegate=yes` without root.
 //!
 //! The directory is created with `mkdir` (not `mkdir -p`), so a stale
 //! directory from an earlier run is reported instead of being silently reused
@@ -26,6 +27,7 @@
 compile_error!("tpt-l-cgroup-v2 only supports Linux");
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use thiserror::Error;
 
 /// Errors produced by this crate.
@@ -59,19 +61,60 @@ pub enum CgroupError {
 #[derive(Debug, Clone)]
 pub struct CgroupConfig {
     name: String,
+    /// The calling process's cgroup when the config was made.
+    parent: PathBuf,
+    /// Where `apply` created the group: `parent`, or the cgroupfs root when
+    /// `parent` could not take controllers. Unset until `apply` succeeds.
+    created_under: OnceLock<PathBuf>,
+    /// The leaf that holds this process while controllers are enabled in the
+    /// parent, when apply needed one.
+    host_leaf: OnceLock<PathBuf>,
     cpu_quota_percent: Option<u32>,
     memory_limit_bytes: Option<u64>,
     io_weight: Option<u32>,
     pids_max: Option<u32>,
 }
 
-impl CgroupConfig {
-    const CGROUP_ROOT: &'static str = "/sys/fs/cgroup";
+/// The cgroupfs mount point.
+const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
-    /// Create a new config for a cgroup named `name` under the cgroup root.
+/// Name of the leaf that holds the process while the parent enables
+/// controllers. Fixed, so repeated runs reuse one directory.
+const HOST_LEAF: &str = "tpt-sandbox-host";
+
+/// The calling process's own cgroup directory, from `/proc/self/cgroup`.
+///
+/// Under systemd `Delegate=yes` (or a delegated user slice) this is the
+/// writable subtree; the cgroupfs root usually is not writable. Falls back to
+/// the cgroupfs root when the process is not in a v2 hierarchy.
+fn own_cgroup_dir() -> PathBuf {
+    std::fs::read_to_string("/proc/self/cgroup").map_or_else(
+        |_| PathBuf::from(CGROUP_ROOT),
+        |text| cgroup_dir_from(&text),
+    )
+}
+
+/// Map the contents of a `/proc/self/cgroup` file to a cgroupfs directory.
+/// A v2 entry has the form `0::/path`.
+fn cgroup_dir_from(text: &str) -> PathBuf {
+    text.lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map_or_else(
+            || PathBuf::from(CGROUP_ROOT),
+            |rel| Path::new(CGROUP_ROOT).join(rel.trim_start_matches('/')),
+        )
+}
+
+impl CgroupConfig {
+    /// Create a new config for a cgroup named `name`, nested under the calling
+    /// process's own cgroup. The parent is read now, not at apply time, because
+    /// [`enter`](Self::enter) moves the process into the new cgroup.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            parent: own_cgroup_dir(),
+            created_under: OnceLock::new(),
+            host_leaf: OnceLock::new(),
             cpu_quota_percent: None,
             memory_limit_bytes: None,
             io_weight: None,
@@ -79,10 +122,17 @@ impl CgroupConfig {
         }
     }
 
-    /// The cgroup's name (its directory name under `/sys/fs/cgroup`).
+    /// The cgroup's name (its directory name under the parent cgroup).
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The directory the cgroup lives in: where `apply` created it, otherwise
+    /// the calling process's cgroup (usually the delegated subtree).
+    #[must_use]
+    pub fn parent(&self) -> &Path {
+        self.created_under.get().unwrap_or(&self.parent)
     }
 
     /// Limit CPU usage to `percent` percent of one core (clamped 1–100).
@@ -112,7 +162,7 @@ impl CgroupConfig {
     }
 
     /// Resolve the cgroup directory, rejecting names that could escape the root.
-    fn path(&self) -> Result<PathBuf, CgroupError> {
+    fn check_name(&self) -> Result<(), CgroupError> {
         let name = &self.name;
         let valid = !name.is_empty()
             && name != "."
@@ -122,7 +172,13 @@ impl CgroupConfig {
         if !valid {
             return Err(CgroupError::InvalidName(name.clone()));
         }
-        Ok(Path::new(Self::CGROUP_ROOT).join(name))
+        Ok(())
+    }
+
+    /// The cgroup's directory: the name under the parent that `apply` used.
+    fn path(&self) -> Result<PathBuf, CgroupError> {
+        self.check_name()?;
+        Ok(self.parent().join(&self.name))
     }
 
     /// Controllers this configuration needs enabled in the parent's
@@ -152,12 +208,61 @@ impl CgroupConfig {
     /// and with [`CgroupError::Write`] if a controller cannot be enabled or a
     /// limit cannot be written (typically a permissions or delegation problem).
     pub fn apply(&self) -> Result<(), CgroupError> {
-        let base = self.path()?;
+        // Controllers cannot be enabled in a cgroup that holds processes
+        // (cgroup v2 "no internal processes"). The delegation rule is to move
+        // this process into a leaf first, then enable the parent. That only
+        // works when no other process shares the cgroup.
+        let own_error = match self.create_under(&self.parent) {
+            Err(CgroupError::Write { path, source })
+                if path.ends_with("cgroup.subtree_control")
+                    && self.parent != Path::new(CGROUP_ROOT) =>
+            {
+                CgroupError::Write { path, source }
+            }
+            other => return other,
+        };
+        if self.enable_via_host_leaf(&self.parent).is_ok() {
+            return self.create_under(&self.parent);
+        }
+        // Not delegated to this process. The cgroupfs root takes controllers
+        // when the caller is root. If that fails too, report the caller's own
+        // cgroup: that is the error the user can act on.
+        self.create_under(Path::new(CGROUP_ROOT))
+            .map_err(|_| own_error)
+    }
 
-        // Enable only the controllers the parent does not already delegate.
+    /// Enable the required controllers in `parent` by first moving this process
+    /// into a leaf below it. On failure the process is moved back.
+    fn enable_via_host_leaf(&self, parent: &Path) -> Result<(), CgroupError> {
+        let leaf = parent.join(HOST_LEAF);
+        match std::fs::create_dir(&leaf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(CgroupError::Write { path: leaf, source });
+            }
+        }
+        let pid = std::process::id();
+        Self::write_control(&leaf, "cgroup.procs", &format!("{pid}\n"))?;
+
+        if let Err(e) = self.enable_controllers(parent) {
+            // The parent refused, so it has no controllers and can take the
+            // process back.
+            let _ = Self::write_control(parent, "cgroup.procs", &format!("{pid}\n"));
+            return Err(e);
+        }
+        // Remembered so release() moves the process back into this leaf rather
+        // than into the parent, which now has controllers enabled.
+        let _ = self.host_leaf.set(leaf);
+        Ok(())
+    }
+
+    /// Enable, in `parent`'s `cgroup.subtree_control`, the controllers this
+    /// configuration needs and the parent does not already have.
+    fn enable_controllers(&self, parent: &Path) -> Result<(), CgroupError> {
         // Rewriting an enabled controller is unnecessary, and in a cgroup that
         // holds processes the write can fail with EBUSY.
-        let control = Path::new(Self::CGROUP_ROOT).join("cgroup.subtree_control");
+        let control = parent.join("cgroup.subtree_control");
         let enabled = std::fs::read_to_string(&control).unwrap_or_default();
         let missing: Vec<String> = self
             .required_controllers()
@@ -165,14 +270,24 @@ impl CgroupConfig {
             .filter(|c| !enabled.split_whitespace().any(|e| e == *c))
             .map(|c| format!("+{c}"))
             .collect();
-        if !missing.is_empty() {
-            std::fs::write(&control, format!("{}\n", missing.join(" "))).map_err(|source| {
-                CgroupError::Write {
-                    path: control,
-                    source,
-                }
-            })?;
+        if missing.is_empty() {
+            return Ok(());
         }
+        std::fs::write(&control, format!("{}\n", missing.join(" "))).map_err(|source| {
+            CgroupError::Write {
+                path: control,
+                source,
+            }
+        })
+    }
+
+    /// Create the directory under `parent` and write the limits. Records
+    /// `parent` as the place the group lives once it succeeds.
+    fn create_under(&self, parent: &Path) -> Result<(), CgroupError> {
+        self.check_name()?;
+        let base = parent.join(&self.name);
+
+        self.enable_controllers(parent)?;
 
         std::fs::create_dir(&base).map_err(|source| match source.kind() {
             std::io::ErrorKind::AlreadyExists => CgroupError::AlreadyExists(base.clone()),
@@ -186,24 +301,37 @@ impl CgroupConfig {
             },
         })?;
 
+        // The directory is ours (mkdir just succeeded). If a limit cannot be
+        // written, remove it so a failed apply leaves nothing behind.
+        if let Err(e) = self.write_limits(&base) {
+            let _ = std::fs::remove_dir(&base);
+            return Err(e);
+        }
+        // Only the first successful apply records the parent.
+        let _ = self.created_under.set(parent.to_path_buf());
+        Ok(())
+    }
+
+    /// Write every configured limit below `base`.
+    fn write_limits(&self, base: &Path) -> Result<(), CgroupError> {
         if let Some(percent) = self.cpu_quota_percent {
             // cpu.max format: "{quota_us} {period_us}\n"
             // We use a 100ms period; quota = percent * 1000 µs per period.
             let quota_us = u64::from(percent) * 1_000;
-            Self::write_control(&base, "cpu.max", &format!("{quota_us} 100000\n"))?;
+            Self::write_control(base, "cpu.max", &format!("{quota_us} 100000\n"))?;
         }
 
         if let Some(bytes) = self.memory_limit_bytes {
-            Self::write_control(&base, "memory.max", &format!("{bytes}\n"))?;
-            Self::write_control(&base, "memory.swap.max", "0\n")?;
+            Self::write_control(base, "memory.max", &format!("{bytes}\n"))?;
+            Self::write_control(base, "memory.swap.max", "0\n")?;
         }
 
         if let Some(weight) = self.io_weight {
-            Self::write_control(&base, "io.weight", &format!("default {weight}\n"))?;
+            Self::write_control(base, "io.weight", &format!("default {weight}\n"))?;
         }
 
         if let Some(max) = self.pids_max {
-            Self::write_control(&base, "pids.max", &format!("{max}\n"))?;
+            Self::write_control(base, "pids.max", &format!("{max}\n"))?;
         }
 
         Ok(())
@@ -232,10 +360,18 @@ impl CgroupConfig {
     /// Move the calling process back to the cgroup root and remove this
     /// cgroup. Used to roll back when a later sandbox stage fails.
     pub fn release(&self) -> Result<(), CgroupError> {
-        let root_procs = Path::new(Self::CGROUP_ROOT).join("cgroup.procs");
+        // Move back to where the process was: the host leaf if apply made one,
+        // otherwise the caller's own cgroup. Not the cgroupfs root, which is
+        // usually not writable for a delegated user.
+        let back = self
+            .host_leaf
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.parent.clone());
+        let procs = back.join("cgroup.procs");
         let pid = std::process::id();
-        std::fs::write(&root_procs, format!("{pid}\n")).map_err(|source| CgroupError::Write {
-            path: root_procs,
+        std::fs::write(&procs, format!("{pid}\n")).map_err(|source| CgroupError::Write {
+            path: procs,
             source,
         })?;
         self.destroy()
@@ -293,10 +429,25 @@ mod tests {
     #[test]
     fn accepts_plain_name() {
         let c = CgroupConfig::new("tpt-sandbox-42");
+        assert_eq!(c.path().unwrap(), c.parent().join("tpt-sandbox-42"));
+    }
+
+    #[test]
+    fn parent_is_the_callers_v2_cgroup() {
+        let text = "12:cpu:/legacy\n0::/user.slice/app.slice/run-1.scope\n";
         assert_eq!(
-            c.path().unwrap(),
-            Path::new("/sys/fs/cgroup/tpt-sandbox-42")
+            cgroup_dir_from(text),
+            Path::new("/sys/fs/cgroup/user.slice/app.slice/run-1.scope")
         );
+    }
+
+    #[test]
+    fn parent_falls_back_to_root_without_v2_entry() {
+        assert_eq!(
+            cgroup_dir_from("1:name=systemd:/\n"),
+            Path::new(CGROUP_ROOT)
+        );
+        assert_eq!(cgroup_dir_from("0::/\n"), Path::new(CGROUP_ROOT));
     }
 
     /// Create, join and remove a cgroup from a forked child. The child is the

@@ -20,8 +20,9 @@ has no dependencies beyond the standard library and `thiserror`.
 ## Requirements
 
 - Linux with the **unified cgroup v2 hierarchy** mounted at `/sys/fs/cgroup`.
-- Write access to `/sys/fs/cgroup` for the target group. Typically this means
-  root, or a systemd-delegated subtree.
+- Write access to the caller's own cgroup (the directory in
+  `/proc/self/cgroup`), where the new group is created. Typically this means
+  root, or a systemd-delegated unit (`Delegate=yes`).
 - The relevant controllers (`cpu`, `memory`, `io`) enabled for the parent
   group. Missing controllers surface as `CgroupError` values from `apply`.
 - Rust 1.85 or newer.
@@ -66,8 +67,9 @@ cg.destroy().expect("cgroup cleanup failed");
 
 ## Behaviour and limitations
 
-- **Fixed root.** The hierarchy is always created under `/sys/fs/cgroup`.
-  Custom roots are not supported.
+- **Parent is the caller's cgroup.** The group is created under the directory
+  the process is in when the `CgroupConfig` is made (`CgroupConfig::parent`),
+  not under the cgroupfs root. Custom parents are not supported.
 - **Cleanup is manual.** The group is not removed on drop. Call `destroy`
   after all processes have exited. The kernel refuses to remove a group that
   still has processes.

@@ -63,10 +63,8 @@ impl SecurityContext {
             user: parts[0].to_owned(),
             role: parts[1].to_owned(),
             type_: parts[2].to_owned(),
-            level: parts
-                .get(3)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string),
+            // An empty level was rejected above, so any level present is non-empty.
+            level: parts.get(3).map(ToString::to_string),
         })
     }
 
@@ -110,6 +108,11 @@ mod tests {
     fn parse_four_part() {
         let ctx = SecurityContext::parse("system_u:system_r:kernel_t:s0").unwrap();
         assert_eq!(ctx.level.as_deref(), Some("s0"));
+    }
+
+    #[test]
+    fn parse_rejects_empty_level() {
+        assert!(SecurityContext::parse("system_u:system_r:kernel_t:").is_err());
     }
 
     #[test]
