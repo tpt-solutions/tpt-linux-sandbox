@@ -9,6 +9,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- PID namespace by default: the command is PID 1 of its own namespace (`--share-pids` turns it off).
+- IPC isolation by default: abstract Unix sockets and signals are scoped to the sandbox (`--share-ipc` turns it off).
+- `--allow-tcp-bind` and `--allow-tcp-connect` for TCP port rules (Linux 6.7+).
+- Built-in profiles and policy files accept `pid_namespace`, `isolate_ipc`, `allow_tcp_bind` and `allow_tcp_connect`.
+
 - `tpt-sandbox` binary running a command inside `tpt-l-sandbox`.
 - Options for allowlists (`--allow-read`, `--allow-write`, `--allow-exec`),
   network (`--no-network`), limits (`--memory-limit`, `--cpu-quota`,

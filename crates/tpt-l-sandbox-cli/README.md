@@ -77,6 +77,10 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 | `--drop-caps` | Drop all capabilities before running the command. |
 | `--seccomp <MODE>` | `enforce` (default), `log` (log only) or `off`. |
 | `--pass-env <NAME>` | Pass this environment variable through. Repeatable. |
+| `--allow-tcp-bind <PORT>` | Permit binding TCP to `PORT`. Repeatable. Once any port is listed, other ports are denied (Linux 6.7+). |
+| `--allow-tcp-connect <PORT>` | Permit connecting TCP to `PORT`. Repeatable. Same rule (Linux 6.7+). |
+| `--share-pids` | Share the host PID namespace. By default the command is PID 1 of its own namespace. |
+| `--share-ipc` | Do not isolate abstract Unix sockets and signals. By default they are scoped to the sandbox (Linux 6.12+). |
 | `--json` | Print a JSON exit event to stderr. |
 | `--dry-run`, `--explain` | Print the effective policy and exit without running. |
 | `--learn` | Run the command unsandboxed under `strace` and print a draft policy. |
@@ -127,11 +131,18 @@ is printed to stderr.
   for the command and its children. Landlock grants whole directory trees.
 - **Resource limits need cgroup delegation.** Without it the limit flags fail
   with a clear error; `--doctor` reports which controllers are missing.
+  Built-in profiles set no limits, so they work without delegation.
+- **PID namespace by default.** The command is PID 1 of its own namespace and
+  cannot see or signal host processes by PID. Its children are reparented to
+  it, so it must reap them, as any init process must. Without `--new-root`,
+  `/proc` is still the host's, so it lists host processes; use `--new-root` for
+  a private `/proc`.
+- **Port rules are strict.** `--allow-tcp-*` fails the run on kernels before 6.7
+  rather than running without the rule. IPC isolation is best-effort: it is on
+  by default and is dropped on older kernels.
 - **The command is restricted, not the CLI.** The CLI forks first, the child
   applies the sandbox and `exec`s the command, and the parent waits, removes the
   child's cgroup, and reports the exit.
-- **The PID namespace is not used.** The command can see host process IDs
-  through `/proc`.
 - **Network isolation is all-or-nothing.** `--no-network` gives the command a
   network namespace with no external connectivity; there is no per-host policy.
 - **`--learn` runs the command without a sandbox** to record what it opens.
