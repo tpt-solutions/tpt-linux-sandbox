@@ -19,6 +19,14 @@ and this crate adheres to [Semantic Versioning](https://semver.org/).
   child between fork and exec.
 - Re-exports of the layer types for single-dependency use.
 - `SandboxError` for validation and per-layer failures.
+- The `sandboxed_command` example.
+
+### Changed
+
+- When a jail is configured, Landlock paths are validated under the jail's new
+  root, and a missing path is reported by name.
+- `validate` runs before any stage, so a configuration error is reported before
+  anything changes.
 
 ### Fixed
 
@@ -26,6 +34,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/).
   the field is crate-private in `tpt-l-namespaces-rs`.
 - The cgroup created in stage 2 is released if a later stage fails.
 - Seccomp and Landlock are no longer applied in an order that kills the process
-  during Landlock setup.
+  during Landlock setup. Landlock's setup syscalls are allowed under the seccomp
+  filter.
 - Warns when a user namespace is requested without a mount namespace (the
   warning was documented but never printed).

@@ -85,6 +85,9 @@ error is reported before anything changes.
 - **Process-wide effect.** Every stage affects the calling process and anything
   it forks later. The cgroup stays in place after a successful `apply`; the
   process that created it is responsible for removing it.
+- **Jail paths.** When a jail is configured, Landlock paths are checked under the
+  jail's new root, because the rules are resolved after the pivot. A missing path
+  is reported by name.
 
 ## Not wired in
 
@@ -94,6 +97,9 @@ Use it directly to watch audit events.
 ## Known gaps
 
 - Only the calling thread is restricted (see above).
-- The PID namespace is not created by the CLI; `NamespaceSet::pid` affects
-  children only.
-- Network-level Landlock rules (ABI 4) are not applied.
+- `NamespaceSet::pid` affects children only. The process that calls `apply` stays
+  in its original PID namespace, so it must fork before the namespace has an
+  effect. The `tpt-sandbox` CLI does this; a direct user of this crate must too.
+- Landlock TCP port rules (ABI 4) are passed through with the rest of the
+  `RulesetBuilder`. They are enforced only when set, and `apply` fails on kernels
+  without ABI 4.
