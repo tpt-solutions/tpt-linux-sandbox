@@ -27,7 +27,7 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - [x] ABI v3 filesystem rights (`Refer`, `Truncate`), `RemoveDir`; best-effort on older kernels — **verified** (CLI tests)
 - [x] `require_full_enforcement()` — opt-in error on partial enforcement — **checked**
 - [x] **ABI 4 — TCP bind and connect port rules** (`allow_tcp_bind`, `allow_tcp_connect`). Explicit port rules are a hard requirement: on kernels before 6.7, `apply` fails with a clear error — **verified** (denial test on 6.18)
-- [x] **ABI 6 — scoped abstract Unix sockets and signals** (`isolate_abstract_sockets_and_signals`), best-effort, on by default in the CLI — **checked** (applied on 6.18; not separately tested against a second process)
+- [x] **ABI 6 — scoped abstract Unix sockets and signals** (`isolate_abstract_sockets_and_signals`), best-effort, on by default in the CLI — **verified**: a sandboxed child cannot connect to an abstract socket the unrestricted parent listens on; a control without the scope connects (so the refusal is caused by the scope). Kernel 6.18.
 - [x] Forked-child regression test: the allowlist holds for a child — **verified** (root and unprivileged)
 - [ ] ABI 5 (ioctl on devices) — not added; no use case in the CLI yet
 
@@ -97,7 +97,7 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - [x] Receive errors delivered through the channel; reader stops within ~0.5 s of the receiver being dropped
 - [x] `subscribe` returns `Result<AuditEvent, AuditError>` items (API change)
 - [x] Live subscription test — **verified**: subscribes as root; as an unprivileged user it reports a skip (no `CAP_AUDIT_READ`)
-- [ ] Example for the live stream — `tail_audit` compiles; not run (needs `CAP_AUDIT_READ`)
+- [x] Example for the live stream — `tail_audit` **verified**: as root it subscribes and streams (no events seen in 4 s; the container has no audit rules); unprivileged it exits with the missing-privilege message
 
 ---
 
@@ -200,7 +200,7 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 ### Examples & templates
 - [x] Examples for the eight main crates (`cargo run -p <crate> --example <name>`) — **verified** to compile; **run**: `sandboxed_command`, `enter_jail` (root and unprivileged)
 - [x] `chroot-jail` example: `enter_jail` — **verified**
-- [x] Not run (they change the calling process or need a privilege): `readonly_etc`, `base_profile`, `enter_namespaces`, `drop_caps`, `limited_group`, `tail_audit`, `convert_profile`. Each example says what it needs.
+- [x] All examples now **run**, as root and as UID 1000: `readonly_etc` (denies `/tmp` writes), `base_profile`, `convert_profile`, `enter_namespaces` (uid 0 inside), `sandboxed_command`, `enter_jail`, `tail_audit`. `drop_caps` runs as root and reports the missing privilege as UID 1000 (its docs say to use `unshare -Ur`). `limited_group` now explains the missing cgroup delegation instead of panicking.
 - [x] `templates/` — GitHub Actions workflow, systemd unit with `Delegate=yes`, Dockerfile, devcontainer
 - [x] Policy cookbook — `docs/policy-cookbook.md`
 
@@ -250,5 +250,5 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - CI workflows (`ci.yml`, `release.yml`) have not run on GitHub.
 - `install.sh` download, `cargo binstall` download and the composite action have not run against a real release.
 - Nix flake: untested. Docker image: not built (needs a published release).
-- Landlock ABI 6 scoping has not been tested with two processes across a domain boundary.
-- The release-mode suite ran as root only; the unprivileged suite ran in debug only.
+- Nix flake and Docker image (see Phase 10).
+- Nothing has been pushed; CI has not run on GitHub.
