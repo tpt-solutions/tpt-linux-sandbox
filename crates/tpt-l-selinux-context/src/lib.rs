@@ -1,6 +1,6 @@
 //! Parse and manipulate SELinux security contexts.
 //!
-//! Reads contexts from `/proc/self/attr/current` and `getfilecon(3)` via
+//! Reads the calling process's context from `/proc/self/attr/current` via
 //! standard file I/O. Does **not** link against `libselinux`.
 //!
 //! # Example
@@ -47,8 +47,17 @@ impl SecurityContext {
     pub fn parse(ctx: &str) -> Result<Self, SelinuxError> {
         let trimmed = ctx.trim_end_matches('\0').trim();
         let parts: Vec<&str> = trimmed.splitn(4, ':').collect();
-        if parts.len() < 3 || parts[0].is_empty() {
+        // Every mandatory field must be non-empty and free of whitespace or
+        // control characters; the optional level must also be well-formed.
+        let valid =
+            |s: &str| !s.is_empty() && s.chars().all(|c| !c.is_whitespace() && !c.is_control());
+        if parts.len() < 3 || !parts[..3].iter().all(|p| valid(p)) {
             return Err(SelinuxError::InvalidFormat(ctx.to_owned()));
+        }
+        if let Some(level) = parts.get(3) {
+            if !valid(level) {
+                return Err(SelinuxError::InvalidFormat(ctx.to_owned()));
+            }
         }
         Ok(SecurityContext {
             user: parts[0].to_owned(),
@@ -57,14 +66,21 @@ impl SecurityContext {
             level: parts
                 .get(3)
                 .filter(|s| !s.is_empty())
-                .map(|s| s.to_string()),
+                .map(ToString::to_string),
         })
     }
 
     /// Read the SELinux security context of the calling process.
     pub fn current_process() -> Result<Self, SelinuxError> {
-        let raw = std::fs::read_to_string("/proc/self/attr/current")
-            .map_err(|_| SelinuxError::NotEnabled)?;
+        let raw = match std::fs::read_to_string("/proc/self/attr/current") {
+            Ok(s) => s,
+            // Only a missing attr file means SELinux is absent; other I/O
+            // failures (e.g. EACCES) are reported as-is.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SelinuxError::NotEnabled);
+            }
+            Err(e) => return Err(SelinuxError::Read(e)),
+        };
         Self::parse(&raw)
     }
 
@@ -101,6 +117,19 @@ mod tests {
         let raw = "system_u:system_r:kernel_t:s0";
         let ctx = SecurityContext::parse(raw).unwrap();
         assert_eq!(ctx.to_canonical(), raw);
+    }
+
+    #[test]
+    fn rejects_empty_fields() {
+        assert!(SecurityContext::parse("system_u::kernel_t").is_err());
+        assert!(SecurityContext::parse(":system_r:kernel_t").is_err());
+        assert!(SecurityContext::parse("system_u:system_r:").is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_and_newlines() {
+        assert!(SecurityContext::parse("system_u:system r:kernel_t").is_err());
+        assert!(SecurityContext::parse("system_u:system_r:kernel_t\nevil").is_err());
     }
 
     #[test]
