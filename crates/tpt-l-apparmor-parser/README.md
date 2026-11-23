@@ -23,6 +23,10 @@ platform to inspect, validate, or convert profiles.
   diagnostic tooling can report it instead of silently dropping it.
 - Convert file rules to [`LandlockFileRule`] values via
   [`AppArmorProfile::landlock_rules`].
+- Report the rules that have no Landlock equivalent, via
+  [`AppArmorProfile::unmapped_rules`].
+- Reject nested or unterminated profiles, expand `@{VARIABLE}` references, and
+  accept quoted paths. A `deny` rule never grants access.
 
 ## Requirements
 
@@ -73,6 +77,7 @@ for lrule in profile.landlock_rules() {
 | `AppArmorProfile` | struct | A parsed profile: `name` and `rules`. |
 | `AppArmorProfile::parse(&str)` | fn | Parse profile source text. |
 | `AppArmorProfile::landlock_rules(&self)` | fn | Map file rules to Landlock-compatible rules. |
+| `AppArmorProfile::unmapped_rules(&self)` | fn | List the rules that have no Landlock equivalent. |
 | `Rule` | enum | `File`, `Network`, or `Other(String)`. |
 | `FilePermissions` | struct | `read`, `write`, `execute`, `link` flags. Implements `Default`. |
 | `LandlockFileRule` | struct | `path_pattern` plus `permissions`. |
