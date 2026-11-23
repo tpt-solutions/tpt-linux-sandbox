@@ -83,8 +83,10 @@ impl SeccompPolicy {
     /// linked programs (file I/O, memory management, threads, sockets, time).
     ///
     /// Excludes process-tracing and signal-sending syscalls (`ptrace`, `kill`,
-    /// `tgkill`) and credential changes (`setuid`, `setgid`). Unlisted calls
-    /// return `EPERM`.
+    /// `tgkill`) and credential changes (`setuid`, `setgid`). `setresuid` and
+    /// `setresgid` are allowed because GNU make calls them at startup; the
+    /// sandbox's user namespace maps only the caller's own ids, so they can
+    /// only keep the current ones. Unlisted calls return `EPERM`.
     ///
     /// Note: `clone` and `clone3` are allowed without filtering their flags,
     /// so this profile does not by itself prevent creating new namespaces.
@@ -248,6 +250,10 @@ const BASE_ALLOW: &[&str] = &[
     "getdents64",
     "readlinkat",
     "faccessat",
+    // glibc's eaccess() (used by GNU make to search PATH) calls this. Without
+    // it the call fails with EPERM and make reports "Operation not permitted".
+    // It only reads access rights; Landlock still decides what is reachable.
+    "faccessat2",
     "fchmodat",
     "mkdirat",
     "unlinkat",
@@ -296,6 +302,12 @@ const BASE_ALLOW: &[&str] = &[
     "sysinfo",
     "prlimit64",
     "getrlimit",
+    // Read-only resource accounting; GNU make calls it after each job.
+    "getrusage",
+    // GNU make calls these at startup. Only the caller's own ids are mapped
+    // into the user namespace, so the calls cannot change identity.
+    "setresuid",
+    "setresgid",
     "umask",
     "prctl",
     "set_tid_address",
@@ -458,6 +470,7 @@ fn syscall_table() -> Vec<(&'static str, i64)> {
         ("readlinkat", libc::SYS_readlinkat),
         ("fchmodat", libc::SYS_fchmodat),
         ("faccessat", libc::SYS_faccessat),
+        ("faccessat2", libc::SYS_faccessat2),
         ("fchmod", libc::SYS_fchmod),
         ("fchown", libc::SYS_fchown),
         ("flock", libc::SYS_flock),
@@ -496,6 +509,9 @@ fn syscall_table() -> Vec<(&'static str, i64)> {
         ("rseq", libc::SYS_rseq),
         ("prlimit64", libc::SYS_prlimit64),
         ("getrlimit", libc::SYS_getrlimit),
+        ("getrusage", libc::SYS_getrusage),
+        ("setresuid", libc::SYS_setresuid),
+        ("setresgid", libc::SYS_setresgid),
         ("sched_getaffinity", libc::SYS_sched_getaffinity),
         ("sched_getparam", libc::SYS_sched_getparam),
         ("ppoll", libc::SYS_ppoll),
