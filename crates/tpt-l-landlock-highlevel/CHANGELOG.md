@@ -9,6 +9,10 @@ and this crate adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `allow_tcp_bind` and `allow_tcp_connect` port rules (Landlock ABI 4). Once a port is listed, other ports of that kind are denied. Applying port rules on a kernel without ABI 4 fails.
+- `isolate_abstract_sockets_and_signals` (Landlock ABI 6), best-effort.
+- A forked-child regression test for the filesystem allowlist.
+
 - `RulesetBuilder` with `allow_read`, `allow_write`, and `allow_exec`.
 - `build` for validation without kernel calls, returning `ValidatedRuleset`.
 - `ValidatedRuleset::apply` for irreversible Landlock enforcement.

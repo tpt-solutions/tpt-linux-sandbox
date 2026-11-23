@@ -136,8 +136,8 @@ impl RulesetBuilder {
     /// Fail [`apply`](ValidatedRuleset::apply) unless the kernel enforces the
     /// whole ruleset, rather than silently dropping unsupported rights.
     ///
-    /// Port rules need this if they must hold: on kernels before 6.7 a port
-    /// allowlist is otherwise not enforced at all.
+    /// Port rules do not need this: they fail at [`apply`](ValidatedRuleset::apply)
+    /// on kernels before 6.7 instead of being silently dropped.
     pub fn require_full_enforcement(mut self) -> Self {
         self.strict = true;
         self
@@ -193,6 +193,13 @@ fn op_err(e: impl std::fmt::Display) -> LandlockError {
     LandlockError::Operation(e.to_string())
 }
 
+fn tcp_unsupported(direction: &str, e: impl std::fmt::Display) -> LandlockError {
+    LandlockError::Operation(format!(
+        "TCP {direction} port rules need Landlock ABI 4 (Linux 6.7+), which this kernel \
+         does not provide: {e}"
+    ))
+}
+
 impl ValidatedRuleset {
     /// Apply the ruleset to the calling process. **Irreversible.**
     ///
@@ -206,8 +213,8 @@ impl ValidatedRuleset {
     /// builder required full enforcement.
     pub fn apply(self) -> Result<(), LandlockError> {
         use landlock::{
-            ABI, Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
-            RulesetCreatedAttr, RulesetStatus, Scope,
+            ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath,
+            PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
         };
 
         // Request ABI v3 filesystem rights (Refer, Truncate). The landlock
@@ -234,11 +241,22 @@ impl ValidatedRuleset {
         let mut attr = Ruleset::default()
             .handle_access(AccessFs::from_all(abi))
             .map_err(op_err)?;
+        // Port rules are an explicit request, so the kernel must support them:
+        // a hard requirement turns "not supported" into an error. The IPC scope
+        // below stays best-effort, because it is on by default.
         if !self.tcp_bind.is_empty() {
-            attr = attr.handle_access(AccessNet::BindTcp).map_err(op_err)?;
+            attr = attr
+                .set_compatibility(CompatLevel::HardRequirement)
+                .handle_access(AccessNet::BindTcp)
+                .map_err(|e| tcp_unsupported("bind", e))?
+                .set_compatibility(CompatLevel::BestEffort);
         }
         if !self.tcp_connect.is_empty() {
-            attr = attr.handle_access(AccessNet::ConnectTcp).map_err(op_err)?;
+            attr = attr
+                .set_compatibility(CompatLevel::HardRequirement)
+                .handle_access(AccessNet::ConnectTcp)
+                .map_err(|e| tcp_unsupported("connect", e))?
+                .set_compatibility(CompatLevel::BestEffort);
         }
         if self.isolate_ipc {
             attr = attr
