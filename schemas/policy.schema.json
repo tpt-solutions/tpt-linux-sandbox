@@ -71,6 +71,26 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Environment variables passed through in addition to PATH, TERM, LANG, LC_ALL and LC_CTYPE."
+    },
+    "pid_namespace": {
+      "type": "boolean",
+      "default": true,
+      "description": "Run the command in its own PID namespace, so it is PID 1 and cannot see or signal host processes."
+    },
+    "isolate_ipc": {
+      "type": "boolean",
+      "default": true,
+      "description": "Block connections to abstract Unix sockets and signals to processes outside the sandbox (Linux 6.12+)."
+    },
+    "allow_tcp_bind": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+      "description": "TCP ports the command may bind. Once any port is listed, other ports are denied (Linux 6.7+)."
+    },
+    "allow_tcp_connect": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+      "description": "TCP ports the command may connect to. Once any port is listed, other ports are denied (Linux 6.7+)."
     }
   }
 }

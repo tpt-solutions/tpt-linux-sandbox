@@ -299,6 +299,42 @@ mod tests {
         );
     }
 
+    /// Create, join and remove a cgroup from a forked child. The child is the
+    /// one that joins, so the test process is not moved. Skips when this user
+    /// cannot create cgroups under `/sys/fs/cgroup`.
+    #[test]
+    #[ignore = "creates a cgroup under /sys/fs/cgroup; run with --include-ignored"]
+    fn enter_and_release_in_forked_child() {
+        let name = format!("tpt-cgroup-test-{}", std::process::id());
+        // SAFETY: the child is single-threaded; it only manipulates cgroups and
+        // `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let cg = CgroupConfig::new(name);
+            let code = match cg.apply() {
+                Err(CgroupError::NotMounted { .. } | CgroupError::Write { .. }) => 3,
+                Err(_) => 4,
+                Ok(()) => match cg.enter().and_then(|()| cg.release()) {
+                    Ok(()) => 0,
+                    Err(_) => 5,
+                },
+            };
+            // SAFETY: _exit skips destructors, which must not run in a forked child.
+            unsafe { libc::_exit(code) };
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: `status` is a valid out-pointer.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child was killed");
+        match libc::WEXITSTATUS(status) {
+            0 => {}
+            3 => eprintln!("skipping: this user cannot create cgroups"),
+            code => panic!("cgroup enter/release failed with code {code}"),
+        }
+    }
+
     #[test]
     fn required_controllers_follow_config() {
         assert_eq!(CgroupConfig::new("t").required_controllers().len(), 0);

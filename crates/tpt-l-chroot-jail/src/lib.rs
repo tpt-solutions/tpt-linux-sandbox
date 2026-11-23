@@ -334,6 +334,51 @@ mod tests {
         );
     }
 
+    /// Checks run inside the jail. Returns 0 when the new root is in effect.
+    fn check_inside_jail() -> i32 {
+        if !Path::new("/marker").exists() {
+            return 2;
+        }
+        if Path::new("/etc").exists() {
+            return 3;
+        }
+        0
+    }
+
+    /// Regression test: pivot into a rootfs inside a user and mount namespace.
+    /// Runs in a forked child, which changes its own root and mounts.
+    #[test]
+    #[ignore = "changes the process root and mounts; run with --include-ignored"]
+    fn pivot_into_rootfs_in_forked_child() {
+        let root = std::env::temp_dir().join(format!("tpt-jail-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("marker"), "inside\n").unwrap();
+
+        // SAFETY: the child is single-threaded; it only unshares, pivots, checks
+        // and `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } != 0 {
+                3
+            } else if JailConfig::new(&root).apply().is_err() {
+                4
+            } else {
+                check_inside_jail()
+            };
+            // SAFETY: _exit skips destructors, which must not run in a forked child.
+            unsafe { libc::_exit(code) };
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: `status` is a valid out-pointer.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(libc::WIFEXITED(status), "child was killed");
+        assert_eq!(libc::WEXITSTATUS(status), 0, "jail did not take effect");
+    }
+
     #[test]
     fn ensure_dir_rejects_symlink() {
         let dir = std::env::temp_dir().join(format!("tpt-jail-test-{}", std::process::id()));

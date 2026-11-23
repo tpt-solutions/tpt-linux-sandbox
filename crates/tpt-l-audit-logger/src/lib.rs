@@ -393,6 +393,20 @@ mod tests {
         assert_eq!(parse_datagram(&buf).len(), 0);
     }
 
+    /// Subscribing needs CAP_AUDIT_READ and a kernel with audit netlink. Without
+    /// the privilege the test reports a skip; any other failure is a real error.
+    #[tokio::test]
+    #[ignore = "reads the kernel audit stream; needs CAP_AUDIT_READ"]
+    async fn subscribe_reports_missing_privilege_cleanly() {
+        match subscribe(8).await {
+            Ok(rx) => drop(rx),
+            Err(AuditError::PermissionDenied) => {
+                eprintln!("skipping: no CAP_AUDIT_READ");
+            }
+            Err(e) => panic!("unexpected audit error: {e}"),
+        }
+    }
+
     #[test]
     fn invalid_utf8_body_is_kept_lossily() {
         let buf = build_msg(1300, b"msg=\xff\xfe ok=1");
