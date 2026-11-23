@@ -46,9 +46,9 @@ repository = "https://github.com/TPT-Solutions/tpt-linux-sandbox"
 [workspace.dependencies]
 # Sandboxing primitives
 landlock = "0.4"
-seccompiler = "0.4"
+seccompiler = "0.5"
 caps = "0.5"
-nix = { version = "0.29", features = ["user", "fs", "mount", "process", "signal", "sched"] }
+nix = { version = "0.32", features = ["user", "fs", "mount", "process", "signal", "sched"] }
 libc = "0.2"
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -57,7 +57,7 @@ thiserror = "2"
 anyhow = "1"
 # Configuration
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.2"
 # CLI
 clap = { version = "4", features = ["derive"] }
 # Workspace members (version is required by `cargo publish`)
