@@ -118,9 +118,10 @@ impl CapsPolicy {
         // 1. Bounding set first: dropping it needs CAP_SETPCAP, which we may
         //    lose once the permitted set shrinks. Without this, execve would
         //    restore the dropped capabilities.
-        let bounding = caps::read(None, CapSet::Bounding).map_err(op_err)?;
+        let bounding = caps::read(None, CapSet::Bounding).map_err(op_err("read bounding set"))?;
         for cap in bounding.difference(&keep_set) {
-            caps::drop(None, CapSet::Bounding, *cap).map_err(op_err)?;
+            caps::drop(None, CapSet::Bounding, *cap)
+                .map_err(op_err(format!("drop bounding capability {cap:?}")))?;
         }
 
         // 2. Lock securebits so uid 0 gets no implicit capabilities on exec.
@@ -144,11 +145,13 @@ impl CapsPolicy {
         // 4. Inheritable first (clearing is always allowed; raising it would
         //    need CAP_SETPCAP, which the next steps remove), then effective,
         //    then permitted.
-        caps::set(None, CapSet::Inheritable, &CapsHashSet::new()).map_err(op_err)?;
-        let permitted = caps::read(None, CapSet::Permitted).map_err(op_err)?;
+        caps::set(None, CapSet::Inheritable, &CapsHashSet::new())
+            .map_err(op_err("clear inheritable set"))?;
+        let permitted =
+            caps::read(None, CapSet::Permitted).map_err(op_err("read permitted set"))?;
         let new_set: CapsHashSet = permitted.intersection(&keep_set).copied().collect();
-        caps::set(None, CapSet::Effective, &new_set).map_err(op_err)?;
-        caps::set(None, CapSet::Permitted, &new_set).map_err(op_err)?;
+        caps::set(None, CapSet::Effective, &new_set).map_err(op_err("set effective set"))?;
+        caps::set(None, CapSet::Permitted, &new_set).map_err(op_err("set permitted set"))?;
 
         // 5. No setuid/file-capability escalation for this process tree.
         prctl_args(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0)?;
@@ -157,8 +160,9 @@ impl CapsPolicy {
     }
 }
 
-fn op_err(e: impl std::fmt::Display) -> CapsError {
-    CapsError::Operation(e.to_string())
+/// Build an error closure that names the step that failed.
+fn op_err<E: std::fmt::Display>(step: impl std::fmt::Display) -> impl FnOnce(E) -> CapsError {
+    move |e| CapsError::Operation(format!("{step}: {e}"))
 }
 
 fn prctl(option: libc::c_int, arg: libc::c_ulong) -> Result<(), CapsError> {
@@ -173,9 +177,16 @@ fn prctl_args(
 ) -> Result<(), CapsError> {
     // SAFETY: prctl takes plain integer arguments and reads no pointers for
     // the options used here.
-    let ret = unsafe { libc::prctl(option, a2, a3, a4) };
+    // prctl(2) reads five arguments: the option and four values. The kernel
+    // reads all four even when it ignores them, so pass the fifth explicitly
+    // as zero. Leaving it out reads an unspecified register and made
+    // PR_CAP_AMBIENT fail with EINVAL in release builds.
+    let ret = unsafe { libc::prctl(option, a2, a3, a4, 0 as libc::c_ulong) };
     if ret < 0 {
-        return Err(op_err(std::io::Error::last_os_error()));
+        return Err(CapsError::Operation(format!(
+            "prctl option {option}: {}",
+            std::io::Error::last_os_error()
+        )));
     }
     Ok(())
 }
