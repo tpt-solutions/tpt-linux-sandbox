@@ -45,7 +45,7 @@ tpt-sandbox --profile build --dry-run
 tpt-sandbox --learn -- ./my-tool --flag
 ```
 
-Profiles: `strict`, `build`, `network-client`, `maintainer-script`, `untrusted-python`, `untrusted-node`. Print one with `tpt-sandbox --print-profile <name>`.
+Profiles: `strict`, `build`, `network-client`, `maintainer-script`, `untrusted-python`, `untrusted-node`. Print one with `tpt-sandbox --print-profile <name>`. Check a policy file without running it with `tpt-sandbox --check-policy <file>`, and get the policy JSON Schema for editors with `tpt-sandbox --print-schema`.
 
 Full guide: [docs/quick-start.md](docs/quick-start.md). Recipes: [docs/policy-cookbook.md](docs/policy-cookbook.md).
 
