@@ -9,15 +9,23 @@ inputs:
     description: "Shell command to run inside the sandbox."
     required: true
   profile:
-    description: "Built-in profile: strict, build, network-client, maintainer-script, untrusted-python, untrusted-node."
+    description: "Built-in profile: strict, build, network-client, maintainer-script, untrusted-python, untrusted-node. The default build profile reads and writes the working directory."
     required: false
-    default: "strict"
+    default: "build"
   policy:
     description: "Optional path to a policy TOML file, applied after the profile."
     required: false
     default: ""
+  workdir:
+    description: "Directory the command runs in. Relative paths in the policy resolve against it. Defaults to the workspace."
+    required: false
+    default: ""
+  version:
+    description: "tpt-sandbox release to install, e.g. v0.1.0. Pin a version in production workflows; latest is the default."
+    required: false
+    default: "latest"
   relax-apparmor-userns:
-    description: "On Ubuntu 24.04+ runners, allow unprivileged user namespaces (needs sudo)."
+    description: "On Ubuntu 24.04+ runners, allow unprivileged user namespaces (needs passwordless sudo). Set to false if the runner does not need it."
     required: false
     default: "true"
 
@@ -27,13 +35,19 @@ runs:
     - name: Allow unprivileged user namespaces
       if: inputs.relax-apparmor-userns == 'true'
       shell: bash
-      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      run: |
+        # A failure is reported, not hidden: the sandbox cannot start without it
+        # on Ubuntu 24.04, and the error below says why.
+        if ! sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
+          echo "::warning::could not relax AppArmor's userns restriction; sandbox setup may fail"
+        fi
 
     - name: Install tpt-sandbox
       shell: bash
       env:
         INSTALL_DIR: ${{ runner.temp }}/tpt-sandbox-bin
         ACTION_PATH: ${{ github.action_path }}
+        TPT_SANDBOX_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         sh "$ACTION_PATH/install.sh"
@@ -45,9 +59,13 @@ runs:
         INSTALL_DIR: ${{ runner.temp }}/tpt-sandbox-bin
         SANDBOX_PROFILE: ${{ inputs.profile }}
         SANDBOX_POLICY: ${{ inputs.policy }}
+        SANDBOX_WORKDIR: ${{ inputs.workdir }}
         SANDBOX_COMMAND: ${{ inputs.command }}
       run: |
         set -euo pipefail
+        if [ -n "$SANDBOX_WORKDIR" ]; then
+          cd "$SANDBOX_WORKDIR"
+        fi
         args=(--profile "$SANDBOX_PROFILE")
         if [ -n "$SANDBOX_POLICY" ]; then
           args+=(--policy "$SANDBOX_POLICY")

@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Rust dependencies (Cargo.lock is committed, so updates arrive as PRs).
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Action versions in .github/workflows, so SHA pins stay current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

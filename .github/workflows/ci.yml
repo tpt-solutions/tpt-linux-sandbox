@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -14,38 +17,51 @@ jobs:
     name: Test (unprivileged)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
       # which would make every sandbox test fail for an environmental reason.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
-      - run: cargo test --workspace -- --include-ignored
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked -- --include-ignored
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Runs the commands from docs/recipes, so the docs cannot drift from the CLI.
+      - run: cargo build -p tpt-l-sandbox-cli --locked
+      - name: Recipe smoke test
+        run: TPT_SANDBOX=target/debug/tpt-sandbox sh scripts/recipes-smoke.sh
 
   privileged:
     name: Test (root, cgroups)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Runs the ignored tests as root, which exercises the cgroup code paths
-      # that need write access under /sys/fs/cgroup.
-      - run: sudo -E env "PATH=$PATH" "$(which cargo)" test --workspace -- --include-ignored
+      # that need write access under /sys/fs/cgroup. A test that skips (for a
+      # missing privilege or tool) prints "skipping:", and that fails this job:
+      # as root, nothing should be skipped. --nocapture keeps the lines visible.
+      - name: Run ignored tests as root (fail on any skip)
+        run: |
+          sudo -E env "PATH=$PATH" "$(which cargo)" test --workspace --locked -- --include-ignored --nocapture 2>&1 | tee test-output.txt
+          if grep -q 'skipping:' test-output.txt; then
+            echo "::error::a test skipped in the root job; see the lines below"
+            grep 'skipping:' test-output.txt
+            exit 1
+          fi
 
   fmt:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -54,8 +70,8 @@ jobs:
     name: Dependency policy (cargo deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2
         with:
           command: check
 
@@ -63,10 +79,12 @@ jobs:
     name: MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@33280e014b87ec2afd73c872fdd38a9ebebf4df9 # 1.85 branch
+      # rust-toolchain.toml pins stable, which would otherwise win over the
+      # toolchain installed above. The explicit +1.85 selects the MSRV.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo +1.85 check --workspace --all-targets --locked
 
   docs:
     name: Docs
@@ -74,18 +92,20 @@ jobs:
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --workspace --no-deps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo doc --workspace --no-deps --locked
 
   portable:
-    name: Build on macOS and Windows (portable crates)
+    # `cargo check` with no -p checks only the workspace default members,
+    # which are the portable crates (see Cargo.toml default-members).
+    name: Check on macOS and Windows (default members)
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+      - run: cargo check --locked

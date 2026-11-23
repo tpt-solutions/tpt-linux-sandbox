@@ -7,23 +7,37 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   binaries:
     name: Binary (${{ matrix.target }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # A tag must match the CLI's version, or the binary and the tag disagree
+      # and cargo-binstall / install.sh download the wrong thing.
+      - name: Check the tag matches the CLI version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/tpt-l-sandbox-cli/Cargo.toml | head -n 1)
+          if [ "$want" != "$have" ]; then
+            echo "tag $GITHUB_REF_NAME does not match CLI version $have" >&2
+            exit 1
+          fi
       # Produces tpt-sandbox-<target>.tar.gz containing tpt-sandbox-<target>/tpt-sandbox,
       # the name cargo-binstall and install.sh expect.
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:
           bin: tpt-sandbox
           target: ${{ matrix.target }}
           archive: tpt-sandbox-$target
+          # Publishes tpt-sandbox-<target>.tar.gz.sha256; install.sh requires it.
+          checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
