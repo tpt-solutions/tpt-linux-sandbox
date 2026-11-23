@@ -257,7 +257,7 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 
 ### Tier 2: smaller fixes and doc sync
 - [x] `/dev` tmpfs `nodev` — **checked** (the pivot test passes, but it does not exercise device nodes).
-- [ ] Mount-point symlink check covers only the final path component (`chroot-jail`, `ensure_dir`/`ensure_file`)
+- [x] Mount-point symlink check covers every path component (`chroot-jail`, `ensure_dir`/`ensure_file` take the jail root) — **verified** (intermediate-symlink unit test; pivot test as root)
 - [x] `close_range` fallback uses the open-file limit — **checked**
 - [x] `subscribe()` documents that it needs a Tokio runtime — docs only.
 - [x] `selinux-context` rejects an empty level; the dead filter is removed — **verified** (`parse_rejects_empty_level`)
@@ -277,7 +277,7 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - [ ] Dockerfile: checksum verification, pinned version, digest-pinned base image; Docker build and hadolint jobs
 - [ ] Nix flake: `flake.lock` and a CI job, or remove until tested
 - [x] Portable job renamed to say what it checks — **not run**.
-- [ ] Test gaps: `doctor()` output and `--learn` flow (partly covered), `--policy` file errors, `--seccomp off|log`, `--pids-limit 0`, command-not-found exit code
+- [~] Test gaps: `--policy` missing file, `--seccomp off|log`, `--pids-limit 0`, command-not-found exit 127 — **verified** (new integration tests). Still open: `doctor()` text output and the `--learn` flow beyond the strace-missing path.
 
 ### Tier 4: automation
 - [x] `.github/dependabot.yml` for cargo and github-actions — **checked** (YAML written; not validated by GitHub).
@@ -289,7 +289,7 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - [ ] `tpt-sandbox check <policy>` — schema and path validation without a command (S)
 - [ ] `--print-schema` and `#:schema` header in `--print-profile` for Taplo/VS Code (S)
 - [ ] Shell completions and man pages (clap_complete, clap_mangen), shipped in the `.deb` (S)
-- [ ] `--doctor --json` (S) — `--doctor` exit code is done; JSON output is not
+- [x] `--doctor --json` (S) — one JSON object on stdout with `checks` and `exit_code` — **verified** (integration test; WSL output)
 - [x] `--memory-limit` accepts K, M and G suffixes — **verified** (`size_tests`, and the memory test passes as root)
 - [ ] `--learn -o file`; complete TOML output (S-M) — `allow_write` is now emitted, but there is no `-o`
 - [ ] Explain denials: re-run under strace, list EACCES paths and the grant that covers each (M)
@@ -318,8 +318,8 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 ### Follow-ups still open
 - [x] **Shared delegated cgroup** — opt-in `move_existing_processes()` / `--move-cgroup-processes` moves the other processes into `tpt-sandbox-host`; off by default. Without it the run is refused with a clear error. **verified** as non-root in a delegated unit (refused without the flag; succeeds with it). The moved processes stay in the leaf afterwards.
 - [x] **`drop_caps` example** reports the missing privilege and exits 1 instead of panicking — **verified** as UID 65534.
-- [ ] `tail_audit` exits 1 unprivileged, which is the documented behaviour; leave it, or document the exit code.
-- [ ] Exit code 2 from `tpt-sandbox` with no arguments: confirm that is the intended usage error.
+- [x] `tail_audit` exit codes documented in the example (1 unprivileged, 0 on stream end) — **checked**.
+- [x] Missing command (`tpt-sandbox` with no arguments, or `--learn` without one) now exits 2, the documented usage-error code; it exited 1 before. — **verified** (`cli_without_command_is_a_usage_error`).
 
 ---
 
