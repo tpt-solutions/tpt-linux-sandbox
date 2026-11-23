@@ -11,16 +11,34 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (unprivileged)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+      # which would make every sandbox test fail for an environmental reason.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo test --workspace -- --include-ignored
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  privileged:
+    name: Test (root, cgroups)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Runs the ignored tests as root, which exercises the cgroup code paths
+      # that need write access under /sys/fs/cgroup.
+      - run: sudo -E env "PATH=$PATH" "$(which cargo)" test --workspace -- --include-ignored
 
   fmt:
     name: Format
@@ -31,3 +49,43 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  deny:
+    name: Dependency policy (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+
+  portable:
+    name: Build on macOS and Windows (portable crates)
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check

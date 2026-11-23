@@ -12,16 +12,29 @@ members = [
     "crates/tpt-l-sandbox",
     "crates/tpt-l-sandbox-cli",
 ]
+# `cargo check` / `cargo build` without --workspace only builds the crates that
+# compile on every platform. Linux-only crates need `--workspace` on Linux.
+default-members = [
+    "crates/tpt-l-apparmor-parser",
+    "crates/tpt-l-selinux-context",
+]
 resolver = "2"
 
 [workspace.lints.rust]
 missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "warn"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 # Allow common false-positives from pedantic.
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+# Deliberate policy: builder methods, boolean configuration structs and doc
+# prose do not need these. Errors are still documented where they matter.
+return_self_not_must_use = "allow"
+struct_excessive_bools = "allow"
+missing_errors_doc = "allow"
+doc_markdown = "allow"
 
 [workspace.package]
 edition = "2024"
@@ -42,13 +55,18 @@ tokio = { version = "1", features = ["full"] }
 # Error handling
 thiserror = "2"
 anyhow = "1"
+# Configuration
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 # CLI
 clap = { version = "4", features = ["derive"] }
-# Workspace members
-tpt-l-landlock-highlevel = { path = "crates/tpt-l-landlock-highlevel" }
-tpt-l-seccomp-builder    = { path = "crates/tpt-l-seccomp-builder" }
-tpt-l-namespaces-rs      = { path = "crates/tpt-l-namespaces-rs" }
-tpt-l-cgroup-v2          = { path = "crates/tpt-l-cgroup-v2" }
-tpt-l-caps-drop          = { path = "crates/tpt-l-caps-drop" }
-tpt-l-chroot-jail        = { path = "crates/tpt-l-chroot-jail" }
-tpt-l-sandbox            = { path = "crates/tpt-l-sandbox" }
+# Workspace members (version is required by `cargo publish`)
+tpt-l-landlock-highlevel = { path = "crates/tpt-l-landlock-highlevel", version = "0.1.0" }
+tpt-l-seccomp-builder    = { path = "crates/tpt-l-seccomp-builder", version = "0.1.0" }
+tpt-l-namespaces-rs      = { path = "crates/tpt-l-namespaces-rs", version = "0.1.0" }
+tpt-l-cgroup-v2          = { path = "crates/tpt-l-cgroup-v2", version = "0.1.0" }
+tpt-l-caps-drop          = { path = "crates/tpt-l-caps-drop", version = "0.1.0" }
+tpt-l-chroot-jail        = { path = "crates/tpt-l-chroot-jail", version = "0.1.0" }
+tpt-l-apparmor-parser    = { path = "crates/tpt-l-apparmor-parser", version = "0.1.0" }
+tpt-l-selinux-context    = { path = "crates/tpt-l-selinux-context", version = "0.1.0" }
+tpt-l-sandbox            = { path = "crates/tpt-l-sandbox", version = "0.1.0" }
