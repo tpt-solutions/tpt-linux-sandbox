@@ -286,8 +286,8 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - [x] `rust-toolchain.toml` installs clippy and rustfmt — **checked**
 
 ### Tier 5: features
-- [ ] `tpt-sandbox check <policy>` — schema and path validation without a command (S)
-- [ ] `--print-schema` and `#:schema` header in `--print-profile` for Taplo/VS Code (S)
+- [x] `tpt-sandbox check <policy>` — **checked**: done as `--check-policy FILE` (see Step 5 below), a flag rather than a subcommand
+- [x] `--print-schema` and `#:schema` header in `--print-profile` for Taplo/VS Code (S) — **verified** (`cli_print_schema_emits_json_schema`, `cli_profile_starts_with_schema_header`; WSL Ubuntu-24.04). The schema URL is an unverified guess at the raw GitHub path on `master`.
 - [ ] Shell completions and man pages (clap_complete, clap_mangen), shipped in the `.deb` (S)
 - [x] `--doctor --json` (S) — one JSON object on stdout with `checks` and `exit_code` — **verified** (integration test; WSL output)
 - [x] `--memory-limit` accepts K, M and G suffixes — **verified** (`size_tests`, and the memory test passes as root)
