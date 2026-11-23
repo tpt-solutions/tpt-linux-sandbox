@@ -90,7 +90,11 @@ impl SeccompPolicy {
     /// so this profile does not by itself prevent creating new namespaces.
     pub fn base_profile() -> Self {
         let mut policy = Self::new().default_action(DenyAction::Errno(libc::EPERM));
-        for name in BASE_ALLOW.iter().chain(BASE_ALLOW_LEGACY) {
+        for name in BASE_ALLOW
+            .iter()
+            .chain(BASE_ALLOW_LEGACY)
+            .chain(BASE_ALLOW_RENAMEAT)
+        {
             policy = policy.allow_syscall(*name);
         }
         policy
@@ -247,7 +251,7 @@ const BASE_ALLOW: &[&str] = &[
     "fchmodat",
     "mkdirat",
     "unlinkat",
-    "renameat",
+    "renameat2",
     "linkat",
     "symlinkat",
     "fsync",
@@ -364,6 +368,14 @@ const BASE_ALLOW_LEGACY: &[&str] = &[
 #[cfg(not(target_arch = "x86_64"))]
 const BASE_ALLOW_LEGACY: &[&str] = &[];
 
+/// `renameat` exists on x86_64 and aarch64 but not on riscv64, which only has
+/// `renameat2` (already in the base list).
+#[cfg(not(target_arch = "riscv64"))]
+const BASE_ALLOW_RENAMEAT: &[&str] = &["renameat"];
+
+#[cfg(target_arch = "riscv64")]
+const BASE_ALLOW_RENAMEAT: &[&str] = &[];
+
 /// Resolve a Linux syscall name to its number on the current architecture.
 ///
 /// Covers the syscalls a typical dynamically linked program uses. Entries
@@ -379,6 +391,8 @@ fn syscall_nr(name: &str) -> Option<i64> {
 #[allow(clippy::too_many_lines)]
 fn syscall_table() -> Vec<(&'static str, i64)> {
     // Entries that exist on every supported architecture.
+    // riscv64 has no extra entries below, so `mut` is unused there only.
+    #[cfg_attr(target_arch = "riscv64", allow(unused_mut))]
     let mut table: Vec<(&'static str, i64)> = vec![
         ("read", libc::SYS_read),
         ("write", libc::SYS_write),
@@ -436,7 +450,7 @@ fn syscall_table() -> Vec<(&'static str, i64)> {
         ("getcwd", libc::SYS_getcwd),
         ("chdir", libc::SYS_chdir),
         ("fchdir", libc::SYS_fchdir),
-        ("renameat", libc::SYS_renameat),
+        ("renameat2", libc::SYS_renameat2),
         ("unlinkat", libc::SYS_unlinkat),
         ("mkdirat", libc::SYS_mkdirat),
         ("linkat", libc::SYS_linkat),
@@ -492,6 +506,10 @@ fn syscall_table() -> Vec<(&'static str, i64)> {
         ("landlock_add_rule", libc::SYS_landlock_add_rule),
         ("landlock_restrict_self", libc::SYS_landlock_restrict_self),
     ];
+
+    // `renameat` is missing on riscv64 (see BASE_ALLOW_RENAMEAT).
+    #[cfg(not(target_arch = "riscv64"))]
+    table.push(("renameat", libc::SYS_renameat));
 
     // Legacy calls that only exist on x86_64 (aarch64 uses the *at variants).
     #[cfg(target_arch = "x86_64")]
