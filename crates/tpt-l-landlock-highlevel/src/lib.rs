@@ -1,15 +1,20 @@
-//! Declarative builder API for Linux Landlock filesystem restrictions.
+//! Declarative builder API for Linux Landlock restrictions.
 //!
 //! Wraps the [`landlock`] crate with an ergonomic, composable builder that
 //! integrates with the `tpt-l-sandbox` 7-stage state machine.
 //!
 //! # Kernel support
 //!
-//! Rules are requested for Landlock ABI v3 (Linux 6.2+, which adds `Refer` and
-//! `Truncate`). The `landlock` crate uses best-effort compatibility, so on older
-//! kernels the unsupported rights are dropped and the ruleset is only
-//! *partially* enforced. Use [`RulesetBuilder::require_full_enforcement`] to
-//! turn that into an error. TCP network rules (ABI v4) are not yet supported.
+//! Filesystem rules request Landlock ABI v3 rights (Linux 6.2+, which adds
+//! `Refer` and `Truncate`). TCP port rules need ABI v4 (Linux 6.7+). Abstract
+//! socket and signal isolation needs ABI v6 (Linux 6.12+). The `landlock`
+//! crate uses best-effort compatibility, so on older kernels the unsupported
+//! rights are dropped and the ruleset is only *partially* enforced. Use
+//! [`RulesetBuilder::require_full_enforcement`] to turn that into an error.
+//!
+//! Network rules are only handled once a port is allowed. A ruleset with no
+//! port rules leaves TCP alone, so `--no-network` still needs the network
+//! namespace.
 //!
 //! # Example
 //!
@@ -20,6 +25,7 @@
 //!     .allow_read("/etc")
 //!     .allow_read("/usr")
 //!     .allow_exec("/usr/bin")
+//!     .allow_tcp_connect(443)
 //!     .build()
 //!     .expect("invalid policy")
 //!     .apply()
@@ -60,10 +66,12 @@ pub enum LandlockError {
     PartiallyEnforced,
 }
 
-/// Builder for a Landlock filesystem restriction policy.
+/// Builder for a Landlock restriction policy.
 ///
 /// Paths added here become the **allowlist** — all other filesystem access is
-/// denied once [`ValidatedRuleset::apply`] is called.
+/// denied once [`ValidatedRuleset::apply`] is called. Ports added with
+/// [`allow_tcp_bind`](Self::allow_tcp_bind) and
+/// [`allow_tcp_connect`](Self::allow_tcp_connect) work the same way for TCP.
 ///
 /// Call [`build`](Self::build) to validate the full configuration, then
 /// [`apply`](ValidatedRuleset::apply) to enforce it. Enforcement is
@@ -73,6 +81,9 @@ pub struct RulesetBuilder {
     read_paths: Vec<PathBuf>,
     write_paths: Vec<PathBuf>,
     exec_paths: Vec<PathBuf>,
+    tcp_bind: Vec<u16>,
+    tcp_connect: Vec<u16>,
+    isolate_ipc: bool,
     strict: bool,
 }
 
@@ -100,8 +111,33 @@ impl RulesetBuilder {
         self
     }
 
+    /// Permit binding a TCP socket to `port`. Once any bind port is allowed,
+    /// binding to every other port is denied (Linux 6.7+).
+    pub fn allow_tcp_bind(mut self, port: u16) -> Self {
+        self.tcp_bind.push(port);
+        self
+    }
+
+    /// Permit connecting a TCP socket to `port`. Once any connect port is
+    /// allowed, connecting to every other port is denied (Linux 6.7+).
+    pub fn allow_tcp_connect(mut self, port: u16) -> Self {
+        self.tcp_connect.push(port);
+        self
+    }
+
+    /// Stop the process from connecting to abstract Unix sockets, or signalling
+    /// processes, outside its own Landlock domain (Linux 6.12+). Without this,
+    /// abstract sockets and signals are not restricted.
+    pub fn isolate_abstract_sockets_and_signals(mut self) -> Self {
+        self.isolate_ipc = true;
+        self
+    }
+
     /// Fail [`apply`](ValidatedRuleset::apply) unless the kernel enforces the
     /// whole ruleset, rather than silently dropping unsupported rights.
+    ///
+    /// Port rules need this if they must hold: on kernels before 6.7 a port
+    /// allowlist is otherwise not enforced at all.
     pub fn require_full_enforcement(mut self) -> Self {
         self.strict = true;
         self
@@ -130,6 +166,9 @@ impl RulesetBuilder {
             read_paths: self.read_paths,
             write_paths: self.write_paths,
             exec_paths: self.exec_paths,
+            tcp_bind: self.tcp_bind,
+            tcp_connect: self.tcp_connect,
+            isolate_ipc: self.isolate_ipc,
             strict: self.strict,
         })
     }
@@ -144,14 +183,21 @@ pub struct ValidatedRuleset {
     read_paths: Vec<PathBuf>,
     write_paths: Vec<PathBuf>,
     exec_paths: Vec<PathBuf>,
+    tcp_bind: Vec<u16>,
+    tcp_connect: Vec<u16>,
+    isolate_ipc: bool,
     strict: bool,
+}
+
+fn op_err(e: impl std::fmt::Display) -> LandlockError {
+    LandlockError::Operation(e.to_string())
 }
 
 impl ValidatedRuleset {
     /// Apply the ruleset to the calling process. **Irreversible.**
     ///
     /// After this call the process and all children it forks are restricted to
-    /// the declared filesystem paths.
+    /// the declared filesystem paths, ports and (if requested) IPC scopes.
     ///
     /// # Errors
     ///
@@ -160,12 +206,12 @@ impl ValidatedRuleset {
     /// builder required full enforcement.
     pub fn apply(self) -> Result<(), LandlockError> {
         use landlock::{
-            ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
-            RulesetStatus,
+            ABI, Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
+            RulesetCreatedAttr, RulesetStatus, Scope,
         };
 
-        // Request ABI v3 rights (Refer, Truncate). The landlock crate's default
-        // best-effort mode drops rights the running kernel does not know.
+        // Request ABI v3 filesystem rights (Refer, Truncate). The landlock
+        // crate's default best-effort mode drops rights the kernel does not know.
         let abi = ABI::V3;
 
         let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
@@ -183,11 +229,23 @@ impl ValidatedRuleset {
             | AccessFs::MakeSym;
         let exec_access = AccessFs::Execute;
 
-        let mut ruleset = Ruleset::default()
+        // Handle only the rights this ruleset uses. Unhandled network or scope
+        // rights stay unrestricted.
+        let mut attr = Ruleset::default()
             .handle_access(AccessFs::from_all(abi))
-            .map_err(|e| LandlockError::Operation(e.to_string()))?
-            .create()
-            .map_err(|e| LandlockError::Operation(e.to_string()))?;
+            .map_err(op_err)?;
+        if !self.tcp_bind.is_empty() {
+            attr = attr.handle_access(AccessNet::BindTcp).map_err(op_err)?;
+        }
+        if !self.tcp_connect.is_empty() {
+            attr = attr.handle_access(AccessNet::ConnectTcp).map_err(op_err)?;
+        }
+        if self.isolate_ipc {
+            attr = attr
+                .scope(Scope::AbstractUnixSocket | Scope::Signal)
+                .map_err(op_err)?;
+        }
+        let mut ruleset = attr.create().map_err(op_err)?;
 
         for path in &self.read_paths {
             let fd = PathFd::new(path).map_err(|e| LandlockError::PathOpen {
@@ -196,7 +254,7 @@ impl ValidatedRuleset {
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access))
-                .map_err(|e| LandlockError::Operation(e.to_string()))?;
+                .map_err(op_err)?;
         }
 
         for path in &self.write_paths {
@@ -206,7 +264,7 @@ impl ValidatedRuleset {
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access | write_access))
-                .map_err(|e| LandlockError::Operation(e.to_string()))?;
+                .map_err(op_err)?;
         }
 
         for path in &self.exec_paths {
@@ -216,12 +274,21 @@ impl ValidatedRuleset {
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access | exec_access))
-                .map_err(|e| LandlockError::Operation(e.to_string()))?;
+                .map_err(op_err)?;
         }
 
-        let status = ruleset
-            .restrict_self()
-            .map_err(|e| LandlockError::Operation(e.to_string()))?;
+        for &port in &self.tcp_bind {
+            ruleset = ruleset
+                .add_rule(NetPort::new(port, AccessNet::BindTcp))
+                .map_err(op_err)?;
+        }
+        for &port in &self.tcp_connect {
+            ruleset = ruleset
+                .add_rule(NetPort::new(port, AccessNet::ConnectTcp))
+                .map_err(op_err)?;
+        }
+
+        let status = ruleset.restrict_self().map_err(op_err)?;
 
         // The landlock crate reports an unsupported kernel as `Ok` with
         // `NotEnforced` rather than as an error. Treat that as a failure so
@@ -275,5 +342,61 @@ mod tests {
             .build()
             .unwrap();
         assert!(v.strict);
+    }
+
+    #[test]
+    fn network_and_ipc_options_are_carried_into_build() {
+        let v = RulesetBuilder::new()
+            .allow_tcp_bind(8080)
+            .allow_tcp_connect(443)
+            .allow_tcp_connect(80)
+            .isolate_abstract_sockets_and_signals()
+            .build()
+            .unwrap();
+        assert_eq!(v.tcp_bind, vec![8080]);
+        assert_eq!(v.tcp_connect, vec![443, 80]);
+        assert!(v.isolate_ipc);
+    }
+
+    #[test]
+    fn defaults_leave_network_and_ipc_alone() {
+        let v = RulesetBuilder::new().build().unwrap();
+        assert!(v.tcp_bind.is_empty() && v.tcp_connect.is_empty() && !v.isolate_ipc);
+    }
+
+    /// Regression test: a forked child applies a filesystem allowlist and must
+    /// be denied outside it. Runs in a fork so the restriction stays in the
+    /// child. Needs a kernel with Landlock enabled.
+    #[test]
+    #[ignore = "restricts the calling process; run with --include-ignored"]
+    fn filesystem_allowlist_holds_in_forked_child() {
+        // SAFETY: the child only applies the ruleset, reads files and `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = match RulesetBuilder::new().allow_read("/etc").build() {
+                Ok(v) => match v.apply() {
+                    Ok(()) => {
+                        let allowed = std::fs::read_to_string("/etc/hostname").is_ok()
+                            || std::fs::read_dir("/etc").is_ok();
+                        let denied = std::fs::read_dir("/proc/self").is_err();
+                        match (allowed, denied) {
+                            (true, true) => 0,
+                            _ => 2,
+                        }
+                    }
+                    Err(_) => 1,
+                },
+                Err(_) => 1,
+            };
+            // SAFETY: _exit skips destructors, which must not run in a forked child.
+            unsafe { libc::_exit(code) };
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: `status` is a valid out-pointer.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child was killed");
+        assert_eq!(libc::WEXITSTATUS(status), 0, "allowlist was not enforced");
     }
 }
