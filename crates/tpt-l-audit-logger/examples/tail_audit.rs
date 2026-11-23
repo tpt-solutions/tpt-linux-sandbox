@@ -2,6 +2,10 @@
 //!
 //! Needs CAP_AUDIT_READ (run as root, or grant the capability).
 //! Run with `cargo run -p tpt-l-audit-logger --example tail_audit`.
+//!
+//! Exit codes: 1 when the subscription cannot be opened (for example without
+//! `CAP_AUDIT_READ`, which is the documented behaviour when run unprivileged),
+//! 0 when the stream ends normally.
 
 #[tokio::main]
 async fn main() {
