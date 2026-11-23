@@ -544,6 +544,7 @@ dependencies = [
 name = "tpt-l-cgroup-v2"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "thiserror",
 ]
 
@@ -561,6 +562,7 @@ name = "tpt-l-landlock-highlevel"
 version = "0.1.0"
 dependencies = [
  "landlock",
+ "libc",
  "thiserror",
 ]
 
