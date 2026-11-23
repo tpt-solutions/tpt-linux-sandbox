@@ -470,3 +470,84 @@ fn cli_new_root_without_system_directories_explains_itself() {
         stderr(&out)
     );
 }
+
+#[test]
+fn cli_doctor_json_is_one_object_with_matching_exit_code() {
+    let out = run_cli(&["--doctor", "--json"]);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "expected one JSON line, got: {text}");
+    let line = lines[0];
+    assert!(line.starts_with(r#"{"checks":[{"level":"#), "got: {line}");
+    assert!(line.ends_with('}'), "got: {line}");
+    assert!(line.contains(r#""name":"kernel""#), "got: {line}");
+
+    // The exit code is 1 when any check warns, and the object says the same.
+    let expected = i32::from(line.contains(r#""level":"warn""#));
+    assert!(
+        line.contains(&format!(r#""exit_code":{expected}}}"#)),
+        "got: {line}"
+    );
+    assert_eq!(out.status.code(), Some(expected), "stdout: {text}");
+}
+
+#[test]
+fn cli_without_command_is_a_usage_error() {
+    let out = run_cli(&["--allow-read", "/etc"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no command given"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cli_command_not_found_exits_127() {
+    let out = run_cli(&["--allow-read", "/etc", "--", "/nonexistent-tpt-sandbox-cmd"]);
+    assert_eq!(out.status.code(), Some(127), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot execute"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cli_zero_pids_limit_is_rejected() {
+    let out = run_cli(&["--allow-read", "/etc", "--pids-limit", "0", "--", "true"]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("process limit must be greater than 0"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cli_seccomp_off_and_log_run_the_command() {
+    for mode in ["off", "log"] {
+        let out = run_cli(&["--allow-read", "/etc", "--seccomp", mode, "--", "true"]);
+        assert!(
+            out.status.success(),
+            "--seccomp {mode}: expected success, stderr: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn cli_missing_policy_file_is_reported() {
+    let out = run_cli(&[
+        "--policy",
+        "/nonexistent-tpt-sandbox-policy.toml",
+        "--",
+        "true",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot read policy file"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}

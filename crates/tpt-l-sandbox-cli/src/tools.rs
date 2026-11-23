@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::CString;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
@@ -10,11 +11,11 @@ use anyhow::{Context as _, Result, bail};
 use crate::policy::Policy;
 
 /// Print a report on whether this machine can run the sandbox, and what will
-/// degrade if it cannot.
+/// degrade if it cannot. With `json`, print one JSON object instead of lines.
 ///
 /// Returns the exit code: 1 if any check is a warning, so the report can gate
 /// a script. Informational lines do not fail.
-pub fn doctor() -> u8 {
+pub fn doctor(json: bool) -> u8 {
     let kernel = read_trim("/proc/sys/kernel/osrelease").unwrap_or_default();
     let checks = [
         check_kernel(),
@@ -28,14 +29,47 @@ pub fn doctor() -> u8 {
         check_selinux(),
         check_strace(),
     ];
-    let mut code = 0;
-    for (level, name, detail) in checks {
-        if level == "warn" {
-            code = 1;
+    let code = u8::from(checks.iter().any(|(level, _, _)| *level == "warn"));
+    if json {
+        let items: Vec<String> = checks
+            .iter()
+            .map(|(level, name, detail)| {
+                format!(
+                    r#"{{"level":{},"name":{},"detail":{}}}"#,
+                    json_string(level),
+                    json_string(name),
+                    json_string(detail)
+                )
+            })
+            .collect();
+        println!(r#"{{"checks":[{}],"exit_code":{code}}}"#, items.join(","));
+    } else {
+        for (level, name, detail) in &checks {
+            println!("[{level}] {name}: {detail}");
         }
-        println!("[{level}] {name}: {detail}");
     }
     code
+}
+
+/// Encode `s` as a JSON string literal.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Whether the `strace` binary used by `--learn` can run.

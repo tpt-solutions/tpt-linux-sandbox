@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use anyhow::{Context as _, bail};
+use anyhow::Context as _;
 use clap::{ArgAction, Parser};
 use policy::Policy;
 use tpt_l_sandbox::{
@@ -131,7 +131,8 @@ struct Args {
     #[arg(long)]
     share_ipc: bool,
 
-    /// Print a JSON exit event to stderr.
+    /// Print a JSON exit event to stderr. With --doctor, print the report as
+    /// one JSON object to stdout instead.
     #[arg(long)]
     json: bool,
 
@@ -203,12 +204,15 @@ fn run(args: &Args) -> anyhow::Result<u8> {
     }
 
     if args.doctor {
-        return Ok(tools::doctor());
+        return Ok(tools::doctor(args.json));
     }
 
+    // A missing command is a usage error, so it exits 2 like other bad
+    // arguments (see the exit-code table in docs/quick-start.md).
     if args.learn {
         if args.command.is_empty() {
-            bail!("--learn needs a command after --");
+            eprintln!("tpt-sandbox: --learn needs a command after --");
+            return Ok(2);
         }
         return tools::learn(&args.command);
     }
@@ -225,7 +229,10 @@ fn run(args: &Args) -> anyhow::Result<u8> {
     }
 
     if args.command.is_empty() {
-        bail!("no command given; usage: tpt-sandbox [OPTIONS] -- COMMAND [ARGS...]");
+        eprintln!(
+            "tpt-sandbox: no command given; usage: tpt-sandbox [OPTIONS] -- COMMAND [ARGS...]"
+        );
+        return Ok(2);
     }
 
     supervise(
