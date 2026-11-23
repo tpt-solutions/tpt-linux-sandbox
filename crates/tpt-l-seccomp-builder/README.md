@@ -24,8 +24,9 @@ and loaded irreversibly with `seccomp(2)`.
 
 - Linux with seccomp-BPF support (`CONFIG_SECCOMP_FILTER`), which is standard
   on current distributions.
-- **x86_64 only in this release.** The syscall-name table covers x86_64 alone.
-  On other architectures every name resolves as unknown. See *Limitations*.
+- **x86_64, aarch64 and riscv64.** The syscall-name table covers these
+  architectures. On any other architecture every name resolves as unknown. See
+  *Limitations*.
 - No privileges are needed to install a filter, but `no_new_privs` must be
   set, which `apply` takes care of as part of loading the filter.
 - Rust 1.85 or newer.
@@ -58,7 +59,9 @@ SeccompPolicy::new()
 | `SeccompPolicy::new()` | fn | Default-deny policy with `DenyAction::Kill`. |
 | `default_action(self, action)` | method | Response for syscalls that are not allowed. |
 | `allow_syscall(self, name)` | method | Permit a syscall by name. |
-| `deny_syscall(self, name, action)` | method | Record an explicit deny entry (see *Limitations*). |
+| `deny_syscall(self, name, action)` | method | Deny a syscall with its own action, even if it is also allowed. |
+| `base_profile()` | fn | General-purpose allowlist for ordinary programs; everything else returns `EPERM`. |
+| `validate(&self)` | method | Check names and errno values without touching the kernel. |
 | `apply(self)` | method | Compile and load the filter. Irreversible. |
 | `DenyAction` | enum | `Kill`, `Errno(i32)`, `Log`. |
 | `SeccompError` | enum | `UnknownSyscall`, `Compile`, and `Load` errors. |
@@ -67,16 +70,18 @@ SeccompPolicy::new()
 
 - **Irreversible.** Once loaded, the filter cannot be removed from the process.
   Children inherit it.
-- **Explicit denies are not per-syscall yet.** `deny_syscall` checks that the
-  name is known, but the entry is not turned into a distinct rule. A denied
-  syscall receives the policy's `default_action`. Use `default_action` to
-  choose the response for all non-allowed calls.
-- **x86_64 syscall table only.** Other architectures are unsupported until
-  their tables are added.
+- **Explicit denies are enforced.** `deny_syscall` compiles to its own filter,
+  loaded before the allowlist, with the action you give. Seccomp applies the most
+  restrictive result, so a denied syscall stays denied even if it is also allowed.
+- **Architecture tables.** x86_64, aarch64 and riscv64 are supported. The legacy
+  calls that only exist on x86_64 are left out of the other tables. riscv64 is
+  checked with `cargo check` and `clippy`, not run.
 - **Small syscall table.** Only the syscalls in the built-in table can be named.
   Calls outside it cannot be used in `allow_syscall` and must be added to the
   crate. Check the table in `src/lib.rs` before relying on a specific name.
 - **Argument filtering is not provided.** Rules match on syscall number only.
+  `clone` and `clone3` are allowed without checking their flags, so the base
+  profile does not by itself stop a process from creating namespaces.
 - **Filter ordering.** Filters are cumulative: applying a second filter adds a
   restriction on top of the first. It cannot widen the first.
 
