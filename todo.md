@@ -316,8 +316,8 @@ Status key: `[x]` done · `[ ]` not done (reason given) · **verified** = ran in
 - [x] **Bug found by the recipes: `make` could not run `cc` under the sandbox.** Four syscalls were missing from the base allowlist: `faccessat2` (used by `eaccess`), `getrusage`, `setresuid` and `setresgid` (GNU make calls the last two at startup). With `EPERM` as the default action, make reported `cc: Operation not permitted`. Added all four. `setresuid`/`setresgid` can only keep the caller's own ids, because the user namespace maps one id; the base-profile doc comment says so. **verified** (smoke test and full suite).
 
 ### Follow-ups still open
-- [ ] Move processes into a leaf (all of them, not just this one) so a delegated cgroup shared with other processes can take controllers. Needs a decision: it moves processes the caller does not own.
-- [ ] Example `drop_caps` panics as an unprivileged user (`drop_caps.rs:14`); the todo's earlier note said it reports the missing privilege. It should print a message and exit cleanly.
+- [x] **Shared delegated cgroup** — opt-in `move_existing_processes()` / `--move-cgroup-processes` moves the other processes into `tpt-sandbox-host`; off by default. Without it the run is refused with a clear error. **verified** as non-root in a delegated unit (refused without the flag; succeeds with it). The moved processes stay in the leaf afterwards.
+- [x] **`drop_caps` example** reports the missing privilege and exits 1 instead of panicking — **verified** as UID 65534.
 - [ ] `tail_audit` exits 1 unprivileged, which is the documented behaviour; leave it, or document the exit code.
 - [ ] Exit code 2 from `tpt-sandbox` with no arguments: confirm that is the intended usage error.
 
