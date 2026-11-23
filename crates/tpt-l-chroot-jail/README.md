@@ -11,10 +11,13 @@ root into it, using `pivot_root(2)` where possible and `chroot(2)` as a fallback
 
 - `JailConfig::new(new_root)` chooses the directory that becomes `/`.
 - `mount_proc()` mounts `proc` at `/proc` inside the jail.
-- `mount_dev_minimal()` provides a minimal `/dev`.
+- `mount_dev_minimal()` provides a minimal `/dev`: a `tmpfs` holding bind-mounted
+  device nodes.
 - `mount_sys_ro()` mounts `sysfs` at `/sys` read-only.
-- `apply()` pivots into the new root, falling back to `chroot(2)` with a
-  warning on stderr when `pivot_root` is unavailable.
+- `apply()` makes the mount tree private, then pivots into the new root.
+- `allow_chroot_fallback()` opts in to `chroot(2)` when `pivot_root` is
+  unavailable. It is off by default.
+- `root()` returns the directory that becomes `/`.
 
 ## Requirements
 
@@ -53,18 +56,27 @@ JailConfig::new("/path/to/rootfs")
 | `mount_proc(self)` | method | Mount `proc` inside the jail. |
 | `mount_dev_minimal(self)` | method | Provide a minimal `/dev`. |
 | `mount_sys_ro(self)` | method | Mount `sysfs` read-only. |
-| `apply(self)` | method | Pivot or chroot into the jail. |
+| `allow_chroot_fallback(self)` | method | Permit `chroot(2)` when `pivot_root` is unavailable. Off by default. |
+| `root(&self)` | method | The directory that becomes `/`. |
+| `apply(self)` | method | Pivot into the jail, or chroot if the fallback is allowed. |
 | `JailError` | enum | `pivot_root`, `chroot`, and mount failures. |
 
 ## Behaviour and limitations
 
 - **Prefers `pivot_root`.** `pivot_root(2)` is harder to escape than
-  `chroot(2)`. The fallback is used only when `pivot_root` fails, and it is
-  logged to stderr because it is weaker.
-- **Mount namespace strongly recommended.** Without a private mount namespace,
-  the mounts and the pivot affect the host's mount table. The
+  `chroot(2)`. `chroot` is used only when `allow_chroot_fallback()` is set and
+  `pivot_root` fails, and the fallback is logged to stderr.
+- **Mount namespace strongly recommended.** The crate makes the mount tree
+  private before the pivot, but that only keeps the host's mount table unchanged
+  when the process is also in its own mount namespace. The
   [`tpt-l-sandbox`](../tpt-l-sandbox) orchestrator enforces this ordering;
   direct users must do it themselves.
+- **Symlinks are refused in mount points.** Every path component below the new
+  root must be a real directory or file, not a symlink. A symlink in an
+  intermediate directory could otherwise redirect a mount or a creation to the
+  host.
+- **Mount-point errors are not ignored.** A mount or unmount failure is returned
+  as an error.
 - **Not a full container.** The jail changes the root directory only. It does
   not limit resources, drop capabilities, or filter syscalls. Combine it with
   the other crates in this workspace.
@@ -79,9 +91,10 @@ JailConfig::new("/path/to/rootfs")
 cargo test -p tpt-l-chroot-jail
 ```
 
-The unit tests check the builder flags and that a nonexistent root fails
-immediately. Mount and pivot behaviour is not exercised by the unit tests
-because it needs privileges; test it in an isolated environment.
+The unit tests check the builder flags, that a nonexistent root fails
+immediately, and symlink refusal in mount-point paths. A forked-child test pivots
+into a root filesystem inside a user and mount namespace, so it needs unprivileged
+user namespaces. The `enter_jail` example shows the same setup.
 
 ## Minimum supported Rust version
 
