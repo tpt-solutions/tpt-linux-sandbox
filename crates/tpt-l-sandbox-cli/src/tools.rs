@@ -208,13 +208,28 @@ fn access_writable(path: &Path) -> bool {
 pub fn explain(policy: &Policy, command: &[String]) {
     println!("Effective policy (dry run; nothing applied)");
     println!(
-        "  namespaces : user, mount{}",
+        "  namespaces : user, mount{}{}",
+        if policy.pid_namespace() { ", pid" } else { "" },
         if policy.no_network {
             ", network (no external access)"
         } else {
             " (network shared with host)"
         }
     );
+    println!(
+        "  ipc        : {}",
+        if policy.isolate_ipc() {
+            "abstract sockets and signals isolated"
+        } else {
+            "shared with host"
+        }
+    );
+    if !policy.allow_tcp_bind.is_empty() || !policy.allow_tcp_connect.is_empty() {
+        println!(
+            "  tcp        : bind {:?}, connect {:?} (other ports denied)",
+            policy.allow_tcp_bind, policy.allow_tcp_connect
+        );
+    }
     let limits = [
         policy.memory_limit.map(|m| format!("memory {m} bytes")),
         policy.cpu_quota.map(|q| format!("cpu {q}%")),

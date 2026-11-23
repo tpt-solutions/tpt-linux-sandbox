@@ -105,6 +105,22 @@ struct Args {
     #[arg(long, value_name = "NAME", action = ArgAction::Append)]
     pass_env: Vec<String>,
 
+    /// Permit binding a TCP socket to PORT (repeatable; Linux 6.7+).
+    #[arg(long, value_name = "PORT", action = ArgAction::Append)]
+    allow_tcp_bind: Vec<u16>,
+
+    /// Permit connecting a TCP socket to PORT (repeatable; Linux 6.7+).
+    #[arg(long, value_name = "PORT", action = ArgAction::Append)]
+    allow_tcp_connect: Vec<u16>,
+
+    /// Share the host PID namespace (the command can see and signal host processes).
+    #[arg(long)]
+    share_pids: bool,
+
+    /// Share host abstract Unix sockets and signalling (no IPC isolation).
+    #[arg(long)]
+    share_ipc: bool,
+
     /// Print a JSON exit event to stderr.
     #[arg(long)]
     json: bool,
@@ -216,12 +232,19 @@ fn flags_policy(args: &Args) -> Policy {
         cwd: args.cwd.clone(),
         seccomp: args.seccomp.clone(),
         pass_env: args.pass_env.clone(),
+        pid_namespace: args.share_pids.then_some(false),
+        isolate_ipc: args.share_ipc.then_some(false),
+        allow_tcp_bind: args.allow_tcp_bind.clone(),
+        allow_tcp_connect: args.allow_tcp_connect.clone(),
     }
 }
 
 /// Build the sandbox from a validated policy. Does not change kernel state.
 fn build_sandbox(policy: &Policy) -> Sandbox {
     let mut ns = NamespaceSet::new().user().mount();
+    if policy.pid_namespace() {
+        ns = ns.pid();
+    }
     if policy.no_network {
         ns = ns.network();
     }
@@ -262,6 +285,15 @@ fn build_sandbox(policy: &Policy) -> Sandbox {
     }
     for path in &policy.allow_exec {
         ruleset = ruleset.allow_exec(path);
+    }
+    for &port in &policy.allow_tcp_bind {
+        ruleset = ruleset.allow_tcp_bind(port);
+    }
+    for &port in &policy.allow_tcp_connect {
+        ruleset = ruleset.allow_tcp_connect(port);
+    }
+    if policy.isolate_ipc() {
+        ruleset = ruleset.isolate_abstract_sockets_and_signals();
     }
     sandbox.landlock(ruleset)
 }
@@ -321,6 +353,19 @@ fn child_main(policy: &Policy, sandbox: &Sandbox, command: &[String]) -> ! {
         child_fail(126, &format!("sandbox setup failed: {e}"));
     }
 
+    // With a PID namespace, the process that created it is not PID 1. Fork
+    // once more so the command is PID 1; this process only relays its status.
+    if policy.pid_namespace() {
+        // SAFETY: the child is still single-threaded, which fork requires.
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            child_fail(126, "cannot fork into the PID namespace");
+        }
+        if pid > 0 {
+            relay_command_status(pid);
+        }
+    }
+
     let cwd = policy.cwd.clone().unwrap_or_else(|| PathBuf::from("/"));
     if let Err(e) = std::env::set_current_dir(&cwd) {
         child_fail(126, &format!("cannot enter {}: {e}", cwd.display()));
@@ -335,6 +380,33 @@ fn child_main(policy: &Policy, sandbox: &Sandbox, command: &[String]) -> ! {
         .envs(passthrough_env(&policy.pass_env))
         .exec();
     child_fail(127, &format!("cannot execute {program}: {err}"))
+}
+
+/// Wait for the command (the PID 1 of the namespace) and exit with its
+/// status. A signal death is explained here, because this process cannot
+/// re-raise the signal: the seccomp allowlist excludes `tgkill`. Never returns.
+fn relay_command_status(pid: libc::pid_t) -> ! {
+    let status = match wait_child(pid) {
+        Ok(status) => status,
+        Err(e) => child_fail(126, &format!("waiting for the command failed: {e}")),
+    };
+    if libc::WIFSIGNALED(status) {
+        let sig = libc::WTERMSIG(status);
+        eprintln!("tpt-sandbox: {}", signal_reason(sig));
+        // SAFETY: _exit skips destructors, which must not run in a forked child.
+        unsafe { libc::_exit(128 + sig) }
+    }
+    // SAFETY: as above.
+    unsafe { libc::_exit(libc::WEXITSTATUS(status)) }
+}
+
+/// A short explanation for a signal that ended the command.
+fn signal_reason(sig: i32) -> &'static str {
+    match sig {
+        SIGSYS => "terminated by seccomp: the policy does not allow a system call it made",
+        SIGKILL => "killed with SIGKILL; possibly the --memory-limit cgroup",
+        _ => "terminated by a signal",
+    }
 }
 
 fn child_fail(code: i32, message: &str) -> ! {
@@ -404,14 +476,7 @@ fn report_exit(status: libc::c_int, json: bool) -> u8 {
         (1, None)
     };
 
-    let reason = match signal {
-        Some(SIGSYS) => {
-            Some("terminated by seccomp: the policy does not allow a system call it made")
-        }
-        Some(SIGKILL) => Some("killed with SIGKILL; possibly the --memory-limit cgroup"),
-        Some(_) => Some("terminated by a signal"),
-        None => None,
-    };
+    let reason = signal.map(signal_reason);
 
     if json {
         let sig = signal.map_or_else(|| "null".to_owned(), |s| s.to_string());

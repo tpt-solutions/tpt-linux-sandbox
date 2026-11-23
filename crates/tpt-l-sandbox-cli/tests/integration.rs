@@ -100,7 +100,9 @@ fn cli_memory_limit_kills_allocation() {
         return;
     }
     if !memory_controller_delegated() {
-        eprintln!("skipping: memory cgroup controller not delegated to /sys/fs/cgroup");
+        eprintln!(
+            "skipping: memory cgroup not usable (not delegated, or no write access to /sys/fs/cgroup)"
+        );
         return;
     }
     // Python's own startup stays well under 64 MiB; the 256 MiB allocation does not.
@@ -153,9 +155,25 @@ fn cli_drop_caps_blocks_mount() {
 
 /// The memory controller must be enabled for the parent cgroup (delegation).
 /// Without it the sandbox cannot set a limit, so the test is skipped.
+/// True when the memory limit can actually be applied: the controller is
+/// delegated, and this user may create a cgroup under `/sys/fs/cgroup`.
+/// `subtree_control` is world-readable, so checking it alone is not enough;
+/// on an unprivileged runner the controller is listed but cgroup creation
+/// fails with EACCES.
 fn memory_controller_delegated() -> bool {
-    std::fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
-        .is_ok_and(|s| s.split_whitespace().any(|c| c == "memory"))
+    let delegated = std::fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+        .is_ok_and(|s| s.split_whitespace().any(|c| c == "memory"));
+    if !delegated {
+        return false;
+    }
+    let probe = format!("/sys/fs/cgroup/tpt-test-probe-{}", std::process::id());
+    match std::fs::create_dir(&probe) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 #[test]
@@ -261,4 +279,85 @@ fn cli_unknown_profile_fails() {
     let out = run_cli(&["--profile", "does-not-exist", "--", "true"]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("unknown profile"));
+}
+
+#[test]
+fn cli_runs_command_as_pid_one_by_default() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipping: python3 not installed");
+        return;
+    }
+    let out = run_cli(&[
+        "--allow-read",
+        "/etc",
+        "--",
+        "python3",
+        "-c",
+        "import os; print(os.getpid())",
+    ]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(!setup_failed(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1");
+}
+
+#[test]
+fn cli_share_pids_keeps_host_pid_space() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipping: python3 not installed");
+        return;
+    }
+    let out = run_cli(&[
+        "--share-pids",
+        "--allow-read",
+        "/etc",
+        "--",
+        "python3",
+        "-c",
+        "import os; print(os.getpid())",
+    ]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let pid: u32 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("pid printed");
+    assert!(pid > 1, "expected a host pid, got {pid}");
+}
+
+/// Landlock TCP rules need Linux 6.7 or newer. Returns false on older kernels.
+fn kernel_has_landlock_tcp() -> bool {
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let mut parts = release.split(|c: char| !c.is_ascii_digit());
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor) >= (6, 7)
+}
+
+#[test]
+fn cli_tcp_allowlist_denies_other_ports() {
+    if !kernel_has_landlock_tcp() {
+        eprintln!("skipping: Landlock TCP rules need Linux 6.7+");
+        return;
+    }
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipping: python3 not installed");
+        return;
+    }
+    // Only port 443 may be connected to; port 9 must be refused by Landlock.
+    let out = run_cli(&[
+        "--allow-read",
+        "/etc",
+        "--allow-tcp-connect",
+        "443",
+        "--",
+        "python3",
+        "-c",
+        "import socket; socket.create_connection(('127.0.0.1', 9), timeout=2)",
+    ]);
+    assert!(!out.status.success(), "connect to port 9 must be denied");
+    assert!(!setup_failed(&out), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Permission denied"),
+        "expected EACCES from Landlock, stderr: {}",
+        stderr(&out)
+    );
 }

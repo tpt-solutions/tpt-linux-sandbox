@@ -62,6 +62,14 @@ pub struct Policy {
     pub seccomp: Option<String>,
     /// Environment variables to pass through in addition to the defaults.
     pub pass_env: Vec<String>,
+    /// Run the command in its own PID namespace (default `true`).
+    pub pid_namespace: Option<bool>,
+    /// Isolate abstract Unix sockets and signals from the host (default `true`).
+    pub isolate_ipc: Option<bool>,
+    /// TCP ports the command may bind (Linux 6.7+).
+    pub allow_tcp_bind: Vec<u16>,
+    /// TCP ports the command may connect to (Linux 6.7+).
+    pub allow_tcp_connect: Vec<u16>,
 }
 
 impl Policy {
@@ -134,6 +142,14 @@ impl Policy {
         self.allow_write.extend(other.allow_write);
         self.allow_exec.extend(other.allow_exec);
         self.pass_env.extend(other.pass_env);
+        self.allow_tcp_bind.extend(other.allow_tcp_bind);
+        self.allow_tcp_connect.extend(other.allow_tcp_connect);
+        if other.pid_namespace.is_some() {
+            self.pid_namespace = other.pid_namespace;
+        }
+        if other.isolate_ipc.is_some() {
+            self.isolate_ipc = other.isolate_ipc;
+        }
         self.no_network |= other.no_network;
         self.drop_caps |= other.drop_caps;
         if other.system_paths.is_some() {
@@ -157,6 +173,16 @@ impl Policy {
         if other.seccomp.is_some() {
             self.seccomp = other.seccomp;
         }
+    }
+
+    /// Whether the command gets its own PID namespace (default on).
+    pub fn pid_namespace(&self) -> bool {
+        self.pid_namespace.unwrap_or(true)
+    }
+
+    /// Whether abstract sockets and signals are isolated (default on).
+    pub fn isolate_ipc(&self) -> bool {
+        self.isolate_ipc.unwrap_or(true)
     }
 
     /// Whether the standard system directories are granted.
