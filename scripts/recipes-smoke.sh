@@ -6,6 +6,11 @@
 set -eu
 
 SANDBOX="${TPT_SANDBOX:-tpt-sandbox}"
+# The script changes directory, so a relative path (target/debug/...) must be
+# made absolute first.
+case "$SANDBOX" in
+    */*) SANDBOX="$(cd "$(dirname "$SANDBOX")" && pwd)/$(basename "$SANDBOX")" ;;
+esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

@@ -7,12 +7,22 @@
 use tpt_l_caps_drop::CapsPolicy;
 
 fn main() {
-    CapsPolicy::new()
+    if let Err(e) = CapsPolicy::new()
         .drop_all()
         .keep("CAP_NET_BIND_SERVICE")
         .apply()
-        .expect("capability drop failed");
+    {
+        // Usually a missing privilege, not a bug: say what to do and stop.
+        eprintln!("cannot drop capabilities here: {e}");
+        eprintln!("run as root, or inside a user namespace: unshare -Ur cargo run ...");
+        std::process::exit(1);
+    }
 
-    let permitted = caps::read(None, caps::CapSet::Permitted).expect("read permitted set");
-    println!("permitted after drop: {permitted:?}");
+    match caps::read(None, caps::CapSet::Permitted) {
+        Ok(permitted) => println!("permitted after drop: {permitted:?}"),
+        Err(e) => {
+            eprintln!("could not read the permitted set: {e}");
+            std::process::exit(1);
+        }
+    }
 }
