@@ -55,6 +55,16 @@ pub enum CgroupError {
     /// A cgroup with this name already exists (possibly stale from an earlier run).
     #[error("cgroup {0} already exists; refusing to reuse it")]
     AlreadyExists(PathBuf),
+    /// Controllers cannot be enabled because the cgroup also holds other
+    /// processes, which cgroup v2 allows only in a leaf.
+    #[error(
+        "cannot enable controllers in {cgroup}: it also holds other processes. \
+         Move them out, or opt in with move_existing_processes()"
+    )]
+    SharedCgroup {
+        /// The cgroup that holds the processes.
+        cgroup: PathBuf,
+    },
 }
 
 /// Configuration for a cgroup v2 hierarchy.
@@ -69,6 +79,9 @@ pub struct CgroupConfig {
     /// The leaf that holds this process while controllers are enabled in the
     /// parent, when apply needed one.
     host_leaf: OnceLock<PathBuf>,
+    /// Whether `apply` may move the other processes of the caller's cgroup
+    /// into the leaf. Off by default.
+    move_existing: bool,
     cpu_quota_percent: Option<u32>,
     memory_limit_bytes: Option<u64>,
     io_weight: Option<u32>,
@@ -81,6 +94,9 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// Name of the leaf that holds the process while the parent enables
 /// controllers. Fixed, so repeated runs reuse one directory.
 const HOST_LEAF: &str = "tpt-sandbox-host";
+
+/// `EBUSY` on Linux: a cgroup write refused because the cgroup holds processes.
+const EBUSY: i32 = 16;
 
 /// The calling process's own cgroup directory, from `/proc/self/cgroup`.
 ///
@@ -115,6 +131,7 @@ impl CgroupConfig {
             parent: own_cgroup_dir(),
             created_under: OnceLock::new(),
             host_leaf: OnceLock::new(),
+            move_existing: false,
             cpu_quota_percent: None,
             memory_limit_bytes: None,
             io_weight: None,
@@ -133,6 +150,18 @@ impl CgroupConfig {
     #[must_use]
     pub fn parent(&self) -> &Path {
         self.created_under.get().unwrap_or(&self.parent)
+    }
+
+    /// Let `apply` move the other processes of the caller's cgroup into a leaf
+    /// when controllers can only be enabled that way.
+    ///
+    /// Off by default, because it moves processes the caller did not start.
+    /// They stay in that leaf afterwards: cgroup v2 does not allow them back
+    /// into the parent while its controllers are enabled.
+    #[must_use]
+    pub fn move_existing_processes(mut self) -> Self {
+        self.move_existing = true;
+        self
     }
 
     /// Limit CPU usage to `percent` percent of one core (clamped 1–100).
@@ -217,7 +246,13 @@ impl CgroupConfig {
                 if path.ends_with("cgroup.subtree_control")
                     && self.parent != Path::new(CGROUP_ROOT) =>
             {
-                CgroupError::Write { path, source }
+                if source.raw_os_error() == Some(EBUSY) {
+                    CgroupError::SharedCgroup {
+                        cgroup: self.parent.clone(),
+                    }
+                } else {
+                    CgroupError::Write { path, source }
+                }
             }
             other => return other,
         };
@@ -245,16 +280,46 @@ impl CgroupConfig {
         let pid = std::process::id();
         Self::write_control(&leaf, "cgroup.procs", &format!("{pid}\n"))?;
 
+        // With the opt-in, move the other processes too. Each one that moved is
+        // recorded, so a failure can put it back.
+        let mut moved = vec![pid];
+        if self.move_existing {
+            let procs = std::fs::read_to_string(parent.join("cgroup.procs")).unwrap_or_default();
+            for other in procs.lines().filter_map(|l| l.trim().parse::<u32>().ok()) {
+                if other == pid {
+                    continue;
+                }
+                match Self::write_control(&leaf, "cgroup.procs", &format!("{other}\n")) {
+                    Ok(()) => moved.push(other),
+                    // The process exited since it was listed. Nothing to move.
+                    Err(CgroupError::Write { source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        Self::restore_processes(parent, &moved);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
         if let Err(e) = self.enable_controllers(parent) {
             // The parent refused, so it has no controllers and can take the
-            // process back.
-            let _ = Self::write_control(parent, "cgroup.procs", &format!("{pid}\n"));
+            // processes back.
+            Self::restore_processes(parent, &moved);
             return Err(e);
         }
         // Remembered so release() moves the process back into this leaf rather
         // than into the parent, which now has controllers enabled.
         let _ = self.host_leaf.set(leaf);
         Ok(())
+    }
+
+    /// Move `pids` back into `parent`, best effort. Only valid while the parent
+    /// has no controllers enabled.
+    fn restore_processes(parent: &Path, pids: &[u32]) {
+        for pid in pids {
+            let _ = Self::write_control(parent, "cgroup.procs", &format!("{pid}\n"));
+        }
     }
 
     /// Enable, in `parent`'s `cgroup.subtree_control`, the controllers this

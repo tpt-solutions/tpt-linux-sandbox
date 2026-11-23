@@ -69,7 +69,7 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 | `--allow-exec <PATH>` | Permit executing files under `PATH`. Repeatable. |
 | `--no-system-paths` | Do not grant the standard system directories. |
 | `--no-network` | Run in a network namespace with no external access. |
-| `--memory-limit <BYTES>` | Memory limit (must be greater than 0). |
+| `--memory-limit <SIZE>` | Memory limit: bytes, or with a K, M or G suffix (for example `512M`). Must be greater than 0. |
 | `--cpu-quota <PERCENT>` | CPU limit as a percentage of one core (1–100). |
 | `--pids-limit <N>` | Maximum number of processes and threads. |
 | `--new-root <PATH>` | Use `PATH` as the new root filesystem. |
@@ -82,6 +82,7 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 | `--share-pids` | Share the host PID namespace. By default the command is PID 1 of its own namespace. |
 | `--share-ipc` | Do not isolate abstract Unix sockets and signals. By default they are scoped to the sandbox (Linux 6.12+). |
 | `--json` | Print a JSON exit event to stderr. |
+| `--move-cgroup-processes` | When limits need a cgroup that also holds other processes, move those processes into a leaf of that cgroup. They stay there after the run. Off by default. |
 | `--dry-run`, `--explain` | Print the effective policy and exit without running. |
 | `--learn` | Run the command unsandboxed under `strace` and print a draft policy. |
 | `--doctor` | Check whether this machine can run the sandbox. |

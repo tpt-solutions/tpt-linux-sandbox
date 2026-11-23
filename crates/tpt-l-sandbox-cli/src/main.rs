@@ -135,6 +135,12 @@ struct Args {
     #[arg(long)]
     json: bool,
 
+    /// When limits need a cgroup that also holds other processes, move those
+    /// processes into a leaf of that cgroup. They stay there after the run.
+    /// Off by default, because it moves processes this command did not start.
+    #[arg(long)]
+    move_cgroup_processes: bool,
+
     /// Show the effective policy and exit without applying it.
     #[arg(long, alias = "explain")]
     dry_run: bool,
@@ -222,7 +228,12 @@ fn run(args: &Args) -> anyhow::Result<u8> {
         bail!("no command given; usage: tpt-sandbox [OPTIONS] -- COMMAND [ARGS...]");
     }
 
-    supervise(&policy, &args.command, args.json)
+    supervise(
+        &policy,
+        &args.command,
+        args.json,
+        args.move_cgroup_processes,
+    )
 }
 
 /// Combine the policy sources in order: profile, policy file, AppArmor
@@ -343,11 +354,14 @@ fn parse_size(text: &str) -> Result<u64, String> {
 }
 
 /// cgroup limits for the child, named after this (the supervising) process.
-fn build_cgroup(policy: &Policy) -> Option<CgroupConfig> {
+fn build_cgroup(policy: &Policy, move_processes: bool) -> Option<CgroupConfig> {
     if policy.memory_limit.is_none() && policy.cpu_quota.is_none() && policy.pids_limit.is_none() {
         return None;
     }
     let mut cg = CgroupConfig::new(format!("tpt-sandbox-{}", std::process::id()));
+    if move_processes {
+        cg = cg.move_existing_processes();
+    }
     if let Some(bytes) = policy.memory_limit {
         cg = cg.memory_limit(bytes);
     }
@@ -361,10 +375,15 @@ fn build_cgroup(policy: &Policy) -> Option<CgroupConfig> {
 }
 
 /// Fork, sandbox and exec the command in the child, then wait for it.
-fn supervise(policy: &Policy, command: &[String], json: bool) -> anyhow::Result<u8> {
+fn supervise(
+    policy: &Policy,
+    command: &[String],
+    json: bool,
+    move_processes: bool,
+) -> anyhow::Result<u8> {
     let sandbox = build_sandbox(policy);
     sandbox.validate().context("policy validation failed")?;
-    let cgroup = build_cgroup(policy);
+    let cgroup = build_cgroup(policy, move_processes);
     if let Some(cg) = &cgroup {
         // Create the group before forking, so this process knows where it is
         // and can remove it. The child only joins it.

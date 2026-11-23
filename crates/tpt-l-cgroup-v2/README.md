@@ -70,6 +70,10 @@ cg.destroy().expect("cgroup cleanup failed");
 - **Parent is the caller's cgroup.** The group is created under the directory
   the process is in when the `CgroupConfig` is made (`CgroupConfig::parent`),
   not under the cgroupfs root. Custom parents are not supported.
+- **Shared cgroups.** Controllers cannot be enabled in a cgroup that also holds
+  other processes. The error says so. `move_existing_processes()` moves those
+  processes into a leaf (`tpt-sandbox-host`) to make it work; they stay there
+  afterwards. It is off by default.
 - **Cleanup is manual.** The group is not removed on drop. Call `destroy`
   after all processes have exited. The kernel refuses to remove a group that
   still has processes.
