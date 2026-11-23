@@ -2,5 +2,5 @@
 allow_read = ["/etc/ssl", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/host.conf", "/usr/share/ca-certificates"]
 drop_caps = true
 seccomp = "enforce"
-memory_limit = 536870912   # 512 MiB
-pids_limit = 128
+# Resource limits are not set here: they need cgroup delegation. Add
+# --memory-limit / --pids-limit, or set memory_limit / pids_limit in a policy file.

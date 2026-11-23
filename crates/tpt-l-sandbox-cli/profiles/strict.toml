@@ -3,5 +3,5 @@
 no_network = true
 drop_caps = true
 seccomp = "enforce"
-memory_limit = 268435456   # 256 MiB
-pids_limit = 64
+# Resource limits are not set here: they need cgroup delegation. Add
+# --memory-limit / --pids-limit, or set memory_limit / pids_limit in a policy file.

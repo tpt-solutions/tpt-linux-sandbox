@@ -3,5 +3,5 @@
 allow_read = ["/etc", "/usr/share", "/usr/include", "/usr/lib"]
 allow_write = ["."]
 seccomp = "enforce"
-memory_limit = 4294967296  # 4 GiB
-pids_limit = 1024
+# Resource limits are not set here: they need cgroup delegation. Add
+# --memory-limit / --pids-limit, or set memory_limit / pids_limit in a policy file.
