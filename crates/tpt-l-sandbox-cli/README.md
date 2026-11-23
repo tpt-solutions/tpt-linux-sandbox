@@ -22,7 +22,11 @@ to `bwrap` and `firejail`. The installed binary is named `tpt-sandbox`.
 - Built-in profiles and TOML policy files, plus import from AppArmor profiles.
 - `--dry-run` to show the effective policy, `--doctor` to check the machine,
   and `--learn` to draft a policy from a run.
-- `--json` for a machine-readable exit event.
+- `--json` for a machine-readable exit event, and `--doctor --json` for a
+  machine-readable machine report.
+- `--check-policy FILE` to validate a policy file and its paths without running
+  anything, and `--print-schema` for the policy JSON Schema. Profiles printed
+  with `--print-profile` start with a `#:schema` header for Taplo and VS Code.
 
 ## Requirements
 
@@ -63,6 +67,7 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 |---|---|
 | `--profile <NAME>` | Start from a built-in profile. Other flags extend it. |
 | `--policy <FILE>` | Load a policy file (same schema as profiles). |
+| `--print-schema` | Print the JSON Schema for policy files and exit. |
 | `--from-apparmor <FILE>` | Import the file rules of an AppArmor profile. |
 | `--allow-read <PATH>` | Permit reads under `PATH`. Repeatable. |
 | `--allow-write <PATH>` | Permit reads and writes under `PATH`. Repeatable. |
@@ -73,7 +78,7 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 | `--cpu-quota <PERCENT>` | CPU limit as a percentage of one core (1–100). |
 | `--pids-limit <N>` | Maximum number of processes and threads. |
 | `--new-root <PATH>` | Use `PATH` as the new root filesystem. |
-| `--cwd <PATH>` | Working directory for the command (default `/`). |
+| `--cwd <PATH>` | Working directory for the command. Default: the invoking directory, or `/` with `--new-root`. |
 | `--drop-caps` | Drop all capabilities before running the command. |
 | `--seccomp <MODE>` | `enforce` (default), `log` (log only) or `off`. |
 | `--pass-env <NAME>` | Pass this environment variable through. Repeatable. |
@@ -81,12 +86,14 @@ tpt-sandbox [OPTIONS] -- <COMMAND> [ARGS...]
 | `--allow-tcp-connect <PORT>` | Permit connecting TCP to `PORT`. Repeatable. Same rule (Linux 6.7+). |
 | `--share-pids` | Share the host PID namespace. By default the command is PID 1 of its own namespace. |
 | `--share-ipc` | Do not isolate abstract Unix sockets and signals. By default they are scoped to the sandbox (Linux 6.12+). |
-| `--json` | Print a JSON exit event to stderr. |
+| `--json` | Print a JSON exit event to stderr. With `--doctor`, print the report to stdout as one JSON object instead. |
 | `--move-cgroup-processes` | When limits need a cgroup that also holds other processes, move those processes into a leaf of that cgroup. They stay there after the run. Off by default. |
 | `--dry-run`, `--explain` | Print the effective policy and exit without running. |
 | `--learn` | Run the command unsandboxed under `strace` and print a draft policy. |
-| `--doctor` | Check whether this machine can run the sandbox. |
-| `--print-profile <NAME>` | Print a built-in profile's TOML and exit. |
+| `--doctor` | Check whether this machine can run the sandbox, and exit. Exits 1 when a check warns. |
+| `--check-policy <FILE>` | Parse a policy file, validate its values and confirm its paths exist, without running anything. Exits 0 when it is usable. |
+| `--print-profile <NAME>` | Print a built-in profile's TOML and exit. The first line is a `#:schema` header. |
+| `--print-schema` | Print the JSON Schema for policy files and exit. |
 | `-h`, `--help` | Show help. |
 | `-V`, `--version` | Show the version. |
 
@@ -116,7 +123,7 @@ tpt-sandbox --profile strict --allow-read /srv/data --dry-run -- ./worker
 | the command's code | the command ran and exited |
 | 128 + N | the command was killed by signal N |
 | 1 | the CLI failed (policy error, setup failure, or `--doctor` found a warning) |
-| 2 | bad command-line flags (usage error from the argument parser) |
+| 2 | bad command-line flags, or no command given (usage error) |
 | 126 | the sandbox could not be set up; nothing ran |
 | 127 | the command could not be executed |
 
@@ -145,6 +152,11 @@ is printed to stderr.
 - **The command is restricted, not the CLI.** The CLI forks first, the child
   applies the sandbox and `exec`s the command, and the parent waits, removes the
   child's cgroup, and reports the exit.
+- **Signals and exit.** SIGHUP, SIGINT and SIGTERM sent to the CLI are forwarded
+  to the command, and the command is killed if the CLI dies.
+- **Cgroup delegation.** Limits are created under the caller's own cgroup. If
+  enabling a controller fails because the cgroup holds other processes, the run
+  is refused unless `--move-cgroup-processes` is given.
 - **Network isolation is all-or-nothing.** `--no-network` gives the command a
   network namespace with no external connectivity; there is no per-host policy.
 - **`--learn` runs the command without a sandbox** to record what it opens.
