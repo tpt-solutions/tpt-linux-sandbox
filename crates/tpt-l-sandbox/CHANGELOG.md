@@ -13,13 +13,19 @@ and this crate adheres to [Semantic Versioning](https://semver.org/).
   and `landlock` layers.
 - `apply` running the seven documented stages in order, with irreversible
   stages last.
-- Validation before any kernel call, including the jail-requires-mount-namespace
-  rule.
+- `Sandbox::validate`, which checks syscall names, errnos, Landlock paths and
+  the jail/namespace rule without changing kernel state.
+- `CommandSandboxExt::sandboxed`, which sandboxes a `std::process::Command`
+  child between fork and exec.
 - Re-exports of the layer types for single-dependency use.
 - `SandboxError` for validation and per-layer failures.
-- Unit tests for builder composition and the empty sandbox.
 
 ### Fixed
 
 - Read the mount-namespace request through `NamespaceSet::has_mount`, because
   the field is crate-private in `tpt-l-namespaces-rs`.
+- The cgroup created in stage 2 is released if a later stage fails.
+- Seccomp and Landlock are no longer applied in an order that kills the process
+  during Landlock setup.
+- Warns when a user namespace is requested without a mount namespace (the
+  warning was documented but never printed).

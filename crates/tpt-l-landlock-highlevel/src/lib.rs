@@ -3,6 +3,14 @@
 //! Wraps the [`landlock`] crate with an ergonomic, composable builder that
 //! integrates with the `tpt-l-sandbox` 7-stage state machine.
 //!
+//! # Kernel support
+//!
+//! Rules are requested for Landlock ABI v3 (Linux 6.2+, which adds `Refer` and
+//! `Truncate`). The `landlock` crate uses best-effort compatibility, so on older
+//! kernels the unsupported rights are dropped and the ruleset is only
+//! *partially* enforced. Use [`RulesetBuilder::require_full_enforcement`] to
+//! turn that into an error. TCP network rules (ABI v4) are not yet supported.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -46,6 +54,10 @@ pub enum LandlockError {
     /// Ruleset creation or restriction failed.
     #[error("landlock operation failed: {0}")]
     Operation(String),
+    /// Only part of the requested ruleset is enforced by this kernel, and the
+    /// caller asked for full enforcement.
+    #[error("Landlock partially enforced by this kernel and full enforcement was required")]
+    PartiallyEnforced,
 }
 
 /// Builder for a Landlock filesystem restriction policy.
@@ -53,14 +65,15 @@ pub enum LandlockError {
 /// Paths added here become the **allowlist** — all other filesystem access is
 /// denied once [`ValidatedRuleset::apply`] is called.
 ///
-/// Call [`build`](Self::build) to validate the full configuration (no kernel
-/// calls), then [`apply`](ValidatedRuleset::apply) to enforce it.
-/// Enforcement is **irreversible** for the lifetime of the process.
-#[derive(Debug, Default)]
+/// Call [`build`](Self::build) to validate the full configuration, then
+/// [`apply`](ValidatedRuleset::apply) to enforce it. Enforcement is
+/// **irreversible** for the lifetime of the process.
+#[derive(Debug, Default, Clone)]
 pub struct RulesetBuilder {
     read_paths: Vec<PathBuf>,
     write_paths: Vec<PathBuf>,
     exec_paths: Vec<PathBuf>,
+    strict: bool,
 }
 
 impl RulesetBuilder {
@@ -87,15 +100,37 @@ impl RulesetBuilder {
         self
     }
 
-    /// Validate the full rule set without touching the kernel.
+    /// Fail [`apply`](ValidatedRuleset::apply) unless the kernel enforces the
+    /// whole ruleset, rather than silently dropping unsupported rights.
+    pub fn require_full_enforcement(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// Validate the rule set. Every configured path is opened once to confirm
+    /// it exists and can be referenced; no restriction is applied yet.
     ///
-    /// Verifies that the running kernel supports the required Landlock ABI
-    /// version and that all configured paths are representable as rules.
+    /// # Errors
+    ///
+    /// Returns [`LandlockError::PathOpen`] for the first path that cannot be
+    /// opened.
     pub fn build(self) -> Result<ValidatedRuleset, LandlockError> {
+        for path in self
+            .read_paths
+            .iter()
+            .chain(&self.write_paths)
+            .chain(&self.exec_paths)
+        {
+            landlock::PathFd::new(path).map_err(|e| LandlockError::PathOpen {
+                path: path.clone(),
+                source: std::io::Error::other(e),
+            })?;
+        }
         Ok(ValidatedRuleset {
             read_paths: self.read_paths,
             write_paths: self.write_paths,
             exec_paths: self.exec_paths,
+            strict: self.strict,
         })
     }
 }
@@ -109,6 +144,7 @@ pub struct ValidatedRuleset {
     read_paths: Vec<PathBuf>,
     write_paths: Vec<PathBuf>,
     exec_paths: Vec<PathBuf>,
+    strict: bool,
 }
 
 impl ValidatedRuleset {
@@ -116,20 +152,28 @@ impl ValidatedRuleset {
     ///
     /// After this call the process and all children it forks are restricted to
     /// the declared filesystem paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandlockError::Operation`] if Landlock is not enforced at all,
+    /// and [`LandlockError::PartiallyEnforced`] for partial enforcement when the
+    /// builder required full enforcement.
     pub fn apply(self) -> Result<(), LandlockError> {
         use landlock::{
             ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
+            RulesetStatus,
         };
 
-        // ABI::V1 = Linux 5.13 baseline. The landlock crate automatically
-        // negotiates downward if the kernel supports a lower version, but we
-        // require at least V1 for meaningful filesystem restriction.
-        let abi = ABI::V1;
+        // Request ABI v3 rights (Refer, Truncate). The landlock crate's default
+        // best-effort mode drops rights the running kernel does not know.
+        let abi = ABI::V3;
 
         let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
         let write_access = AccessFs::WriteFile
             | AccessFs::RemoveFile
+            | AccessFs::RemoveDir
             | AccessFs::Truncate
+            | AccessFs::Refer
             | AccessFs::MakeDir
             | AccessFs::MakeReg
             | AccessFs::MakeSock
@@ -182,13 +226,15 @@ impl ValidatedRuleset {
         // The landlock crate reports an unsupported kernel as `Ok` with
         // `NotEnforced` rather than as an error. Treat that as a failure so
         // callers never believe a restriction is active when it is not.
-        if status.ruleset == landlock::RulesetStatus::NotEnforced {
-            return Err(LandlockError::Operation(
+        match status.ruleset {
+            RulesetStatus::NotEnforced => Err(LandlockError::Operation(
                 "Landlock is not enforced by this kernel; the ruleset was not applied".to_owned(),
-            ));
+            )),
+            RulesetStatus::PartiallyEnforced if self.strict => {
+                Err(LandlockError::PartiallyEnforced)
+            }
+            _ => Ok(()),
         }
-
-        Ok(())
     }
 }
 
@@ -211,5 +257,23 @@ mod tests {
     #[test]
     fn build_succeeds_with_empty_ruleset() {
         RulesetBuilder::new().build().unwrap();
+    }
+
+    #[test]
+    fn build_rejects_missing_path() {
+        let err = RulesetBuilder::new()
+            .allow_read("/definitely/not/a/real/path/tpt")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, LandlockError::PathOpen { .. }));
+    }
+
+    #[test]
+    fn strict_flag_is_carried_into_build() {
+        let v = RulesetBuilder::new()
+            .require_full_enforcement()
+            .build()
+            .unwrap();
+        assert!(v.strict);
     }
 }

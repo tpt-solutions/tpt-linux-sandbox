@@ -1,46 +1,16 @@
 # tpt-l-sandbox
 
-[![crates.io](https://img.shields.io/crates/v/tpt-l-sandbox.svg)](https://crates.io/crates/tpt-l-sandbox)
-[![docs.rs](https://docs.rs/tpt-l-sandbox/badge.svg)](https://docs.rs/tpt-l-sandbox)
+The orchestrator for the `tpt-linux-sandbox` workspace. It combines Landlock,
+seccomp, namespaces, cgroups and capability dropping behind one builder.
+Stages run in a fixed order, and the irreversible ones run last, after the
+whole policy has been checked.
 
-A composable sandbox orchestrator for Linux. It combines the other crates in
-this workspace behind one builder: cgroup limits, namespaces, a filesystem jail,
-capability dropping, a seccomp filter, and a Landlock filesystem policy. The
-stages run in a fixed order that puts the irreversible steps last, after the
-whole policy has been validated.
+## Example
 
-## Features
-
-- One `Sandbox` builder for all layers. Each layer is optional.
-- **Validation before any kernel call.** Configuration problems are reported
-  before the process changes.
-- Fixed, documented stage order (below), with the two irreversible stages last.
-- Re-exports the layer types, so one dependency is enough for common use:
-  `NamespaceSet`, `CgroupConfig`, `JailConfig`, `CapsPolicy`, `SeccompPolicy`,
-  `DenyAction`, and `RulesetBuilder`.
-
-## Requirements
-
-- Linux. Each enabled layer has its own requirements, listed in its crate
-  README:
-  - [`tpt-l-cgroup-v2`](../tpt-l-cgroup-v2): unified cgroup v2 mount and write access.
-  - [`tpt-l-namespaces-rs`](../tpt-l-namespaces-rs): unprivileged user namespaces for rootless use.
-  - [`tpt-l-chroot-jail`](../tpt-l-chroot-jail): `CAP_SYS_ADMIN` and a mount namespace.
-  - [`tpt-l-seccomp-builder`](../tpt-l-seccomp-builder): seccomp-BPF; x86_64 syscall names only.
-  - [`tpt-l-landlock-highlevel`](../tpt-l-landlock-highlevel): Linux 5.13+ with Landlock enabled.
-- Rust 1.85 or newer.
-
-## Installation
-
-```toml
-[dependencies]
-tpt-l-sandbox = "0.1"
-```
-
-## Quick start
-
-```rust,no_run
-use tpt_l_sandbox::{NamespaceSet, RulesetBuilder, Sandbox};
+```rust
+use tpt_l_landlock_highlevel::RulesetBuilder;
+use tpt_l_namespaces_rs::NamespaceSet;
+use tpt_l_sandbox::Sandbox;
 
 Sandbox::new()
     .namespaces(NamespaceSet::new().user().mount().network())
@@ -49,74 +19,81 @@ Sandbox::new()
     .expect("sandbox setup failed");
 ```
 
+To sandbox only a child process, use the `Command` extension. The parent is not
+restricted:
+
+```rust
+use std::process::Command;
+use tpt_l_sandbox::{CommandSandboxExt, Sandbox};
+use tpt_l_landlock_highlevel::RulesetBuilder;
+
+let status = Command::new("/bin/cat")
+    .arg("/etc/hostname")
+    .sandboxed(Sandbox::new().landlock(RulesetBuilder::new().allow_read("/etc")))
+    .status()?;
+```
+
+Runnable version: `cargo run -p tpt-l-sandbox --example sandboxed_command`.
+
 ## Stage order
 
-`Sandbox::apply` runs these stages in order. Only configured layers do anything.
+`Sandbox::apply` runs these stages. Only configured layers do anything.
 
 | Stage | Layer | Reversible? |
 |---|---|---|
-| 1 | Validation (policy checks, no kernel calls) | n/a |
-| 2 | Cgroup creation and limits | Yes |
-| 3 | Namespace creation (`unshare`) | Yes |
-| 4 | Filesystem jail (`pivot_root`, or `chroot` fallback) | Yes |
-| 5 | Capability dropping | Yes |
-| 6 | Seccomp filter | **No** |
-| 7 | Landlock ruleset | **No** |
+| 1 | Validation: syscall names, errnos, Landlock path existence, jail and namespace rules | — (no enforcement) |
+| 2 | cgroup creation and entry (released if a later stage fails) | Yes |
+| 3 | Namespaces (`unshare`) | Yes |
+| 4 | Filesystem jail (`pivot_root`, pseudo-filesystems) | Yes |
+| 5 | Capability drop | Yes |
+| 6 | Seccomp | **No** |
+| 7 | Landlock | **No** |
 
-Stages 6 and 7 run last so that every reversible stage has finished before the
-irreversible ones take effect. If stage 7 fails after stage 6 succeeded, the
-process keeps the seccomp filter; `apply` does not undo it.
+Stage 1 can be run on its own with `Sandbox::validate`, so a configuration
+error is reported before anything changes.
 
-## API overview
+## Builder methods
 
-| Item | Kind | Purpose |
+| Method | Layer | Stage |
 |---|---|---|
-| `Sandbox::new()` | fn | Empty sandbox; `apply` does nothing until layers are added. |
-| `namespaces(self, NamespaceSet)` | method | Stage 3. |
-| `cgroup(self, CgroupConfig)` | method | Stage 2. |
-| `jail(self, JailConfig)` | method | Stage 4. |
-| `caps(self, CapsPolicy)` | method | Stage 5. |
-| `seccomp(self, SeccompPolicy)` | method | Stage 6. |
-| `landlock(self, RulesetBuilder)` | method | Stage 7. |
-| `apply(self)` | method | Run all configured stages. |
-| `SandboxError` | enum | Validation or per-layer errors. |
+| `namespaces(NamespaceSet)` | namespaces | 3 |
+| `cgroup(CgroupConfig)` | cgroup limits | 2 |
+| `jail(JailConfig)` | filesystem jail | 4 |
+| `caps(CapsPolicy)` | capabilities | 5 |
+| `seccomp(SeccompPolicy)` | seccomp | 6 |
+| `landlock(RulesetBuilder)` | Landlock | 7 |
+| `validate(&self)` | checks only | 1 |
+| `apply(self)` | runs all stages | 1–7 |
 
-## Behaviour and limitations
+## Behaviour
 
-- **Validation rejects an unsafe jail.** A filesystem jail without a mount
-  namespace is rejected, because `pivot_root` would otherwise change the host's
-  mount table.
-- **A user namespace without a mount namespace is accepted silently.** The code
-  comment describes this as a warning, but no warning is printed. Add `.mount()`
-  to the namespace set if you need pseudo-filesystems inside the sandbox.
-- **Partial application is possible.** If a stage fails, earlier stages have
-  already taken effect. For example, a cgroup created in stage 2 remains when
-  stage 4 fails. `apply` does not roll back earlier stages.
-- **Irreversible stages are last.** Seccomp and Landlock cannot be removed once
-  applied, so anything that must run after them (logging, cleanup) must run
-  before `apply` or be permitted by the policy.
-- **Process-wide effect.** Every stage affects the calling process and the
-  processes it forks afterwards. Run `apply` in a process dedicated to the work
-  you want sandboxed.
-- **Layer limitations apply.** For example, seccomp name lookup is x86_64-only,
-  and Landlock does not restrict network access. See each layer's README.
+- **Validation rejects:** a jail without a mount namespace; unknown syscall
+  names; errno values outside 1–4095; Landlock paths that cannot be opened.
+- **Failure cleanup:** if a stage fails, the cgroup created in stage 2 is moved
+  out of and removed. Stages 3–5 are not undone. A process that has entered a
+  namespace or dropped capabilities stays that way, so treat a failed `apply`
+  as a reason to exit.
+- **A warning** is printed when a user namespace is requested without a mount
+  namespace or a jail, because the sandbox cannot then mount its own `/proc` or
+  `/dev`.
+- **Threads.** Namespaces, seccomp, Landlock and capabilities apply to the
+  calling thread. Call `apply` before starting threads. A user namespace cannot
+  be created from a multi-threaded process.
+- **Seccomp with Landlock.** When both are configured, the syscalls Landlock
+  needs (`landlock_*`, `openat`, `close`, `prctl`) are allowed automatically, so
+  the seccomp filter cannot kill the process during stage 7.
+- **Process-wide effect.** Every stage affects the calling process and anything
+  it forks later. The cgroup stays in place after a successful `apply`; the
+  process that created it is responsible for removing it.
 
-## Testing
+## Not wired in
 
-```sh
-cargo test -p tpt-l-sandbox
-```
+`tpt-l-audit-logger` is a standalone reader and is not part of the stages.
+Use it directly to watch audit events.
 
-The unit tests check that the builder composes and that an empty sandbox
-applies without error. The full stack needs privileges and kernel features, so
-end-to-end checks are in [`tpt-l-sandbox-cli`](../tpt-l-sandbox-cli).
+## Known gaps
 
-## Minimum supported Rust version
-
-Rust 1.85, inherited from the workspace.
-
-## License
-
-Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE), at your option.
-
-Part of the [tpt-linux-sandbox](https://github.com/TPT-Solutions/tpt-linux-sandbox) workspace.
+- Only the calling thread is restricted (see above).
+- The PID namespace is not created by the CLI; `NamespaceSet::pid` affects
+  children only.
+- Network-level Landlock rules (ABI 4) are not applied.
