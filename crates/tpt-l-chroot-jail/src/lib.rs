@@ -152,7 +152,7 @@ impl JailConfig {
         // they exist in the new tree.
         if self.mount_proc {
             let target = self.new_root.join("proc");
-            ensure_dir(&target)?;
+            ensure_dir(&self.new_root, &target)?;
             mount(
                 Some("proc"),
                 &target,
@@ -165,7 +165,7 @@ impl JailConfig {
 
         if self.mount_sys_ro {
             let target = self.new_root.join("sys");
-            ensure_dir(&target)?;
+            ensure_dir(&self.new_root, &target)?;
             mount(
                 Some("sysfs"),
                 &target,
@@ -192,7 +192,7 @@ impl JailConfig {
         .map_err(|e| mount_error(&self.new_root, e))?;
 
         let put_old = self.new_root.join(".put_old");
-        ensure_dir(&put_old)?;
+        ensure_dir(&self.new_root, &put_old)?;
 
         // pivot_root(".", ".put_old") is relative to the working directory, so
         // enter the new root first.
@@ -234,7 +234,7 @@ impl JailConfig {
         use nix::mount::{MsFlags, mount};
 
         let dev = self.new_root.join("dev");
-        ensure_dir(&dev)?;
+        ensure_dir(&self.new_root, &dev)?;
         mount(
             Some("tmpfs"),
             &dev,
@@ -246,7 +246,7 @@ impl JailConfig {
 
         for name in DEV_NODES {
             let target = dev.join(name);
-            ensure_file(&target)?;
+            ensure_file(&self.new_root, &target)?;
             let source = Path::new("/dev").join(name);
             mount(
                 Some(&source),
@@ -272,9 +272,46 @@ fn errno_io(e: nix::errno::Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(e as i32)
 }
 
-/// Create `path` as a directory, refusing symlinks so a hostile rootfs cannot
-/// redirect a mount to the host.
-fn ensure_dir(path: &Path) -> Result<(), JailError> {
+/// Check every directory between `root` and `path` (excluding `path` itself,
+/// which the caller checks) is a real directory, not a symlink. Without this,
+/// `create_dir("root/link/child")` would follow `link` and create the directory
+/// on the host.
+fn ensure_no_symlink_ancestors(root: &Path, path: &Path) -> Result<(), JailError> {
+    use std::path::Component;
+
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|_| JailError::UnsafePath(path.to_path_buf()))?;
+    let mut parts = rel.components().peekable();
+    let mut current = root.to_path_buf();
+    while let Some(part) = parts.next() {
+        let Component::Normal(name) = part else {
+            return Err(JailError::UnsafePath(path.to_path_buf()));
+        };
+        if parts.peek().is_none() {
+            break;
+        }
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(JailError::UnsafePath(current)),
+            // Nothing below a missing ancestor exists, so there is nothing to redirect.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(JailError::Io {
+                    path: current,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Create `path` as a directory under `root`, refusing symlinks in the path so a
+/// hostile rootfs cannot redirect a mount to the host.
+fn ensure_dir(root: &Path, path: &Path) -> Result<(), JailError> {
+    ensure_no_symlink_ancestors(root, path)?;
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => Ok(()),
         Ok(_) => Err(JailError::UnsafePath(path.to_path_buf())),
@@ -291,9 +328,10 @@ fn ensure_dir(path: &Path) -> Result<(), JailError> {
     }
 }
 
-/// Create `path` as an empty regular file (a bind-mount target), refusing
-/// symlinks.
-fn ensure_file(path: &Path) -> Result<(), JailError> {
+/// Create `path` as an empty regular file under `root` (a bind-mount target),
+/// refusing symlinks in the path.
+fn ensure_file(root: &Path, path: &Path) -> Result<(), JailError> {
+    ensure_no_symlink_ancestors(root, path)?;
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_file() => Ok(()),
         Ok(_) => Err(JailError::UnsafePath(path.to_path_buf())),
@@ -395,8 +433,46 @@ mod tests {
         let link = dir.join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let err = ensure_dir(&link).unwrap_err();
+        let err = ensure_dir(&dir, &link).unwrap_err();
         assert!(matches!(err, JailError::UnsafePath(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_dir_rejects_symlink_in_an_intermediate_component() {
+        let dir = std::env::temp_dir().join(format!("tpt-jail-mid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("root");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        // The final component does not exist; without the ancestor check,
+        // create_dir would follow `link` and create `outside/child`.
+        let err = ensure_dir(&root, &root.join("link").join("child")).unwrap_err();
+        assert!(matches!(err, JailError::UnsafePath(_)));
+        assert!(!outside.join("child").exists());
+
+        let err = ensure_file(&root, &root.join("link").join("file")).unwrap_err();
+        assert!(matches!(err, JailError::UnsafePath(_)));
+        assert!(!outside.join("file").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_dir_creates_plain_nested_paths() {
+        let dir = std::env::temp_dir().join(format!("tpt-jail-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("root");
+        std::fs::create_dir_all(root.join("dev")).unwrap();
+
+        ensure_dir(&root, &root.join("dev").join("sub")).unwrap();
+        ensure_file(&root, &root.join("dev").join("null")).unwrap();
+        assert!(root.join("dev/sub").is_dir());
+        assert!(root.join("dev/null").is_file());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
