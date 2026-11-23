@@ -83,7 +83,8 @@ cargo test -p tpt-l-audit-logger
 ```
 
 The unit tests cover empty bodies, simple records, and quoted values. They do
-not open a netlink socket, so they run without privileges.
+not open a netlink socket, so they run without privileges. A subscribe test runs
+in a forked child and skips without `CAP_AUDIT_READ`.
 
 ## Minimum supported Rust version
 
